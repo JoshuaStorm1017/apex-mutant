@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat, symlink, lstat, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { renderHtml, reportExitCode, summarize, writeReport } from '../src/report.js';
+import { renderHtml, reportExitCode, resolveRealPath, summarize, writeReport } from '../src/report.js';
 import type { MutationResult, Report } from '../src/types.js';
 
 function mutation(overrides: Partial<MutationResult> = {}): MutationResult {
@@ -84,6 +84,49 @@ test('writeReport creates the output directory when missing', async () => {
     await stat(join(dir, 'report.json'));
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('writeReport never writes through a pre-existing symlink at report.json/report.html: this is what the runner relies on for safe --output paths', { skip: process.platform === 'win32' }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'apex-mutant-report-'));
+  const elsewhere = await mkdtemp(join(tmpdir(), 'apex-mutant-elsewhere-'));
+  const decoyJson = join(elsewhere, 'decoy.json');
+  const decoyHtml = join(elsewhere, 'decoy.html');
+  try {
+    await writeFile(decoyJson, 'not a report');
+    await writeFile(decoyHtml, '<not a report>');
+    await symlink(decoyJson, join(dir, 'report.json'));
+    await symlink(decoyHtml, join(dir, 'report.html'));
+
+    await writeReport(dir, report({ results: [mutation()], totalPlanned: 1 }));
+
+    assert.equal(await readFile(decoyJson, 'utf8'), 'not a report', 'a file a symlink happened to point at must never be overwritten');
+    assert.equal(await readFile(decoyHtml, 'utf8'), '<not a report>');
+    assert.equal((await lstat(join(dir, 'report.json'))).isSymbolicLink(), false, 'the symlink must be replaced by a real file');
+    assert.equal((await lstat(join(dir, 'report.html'))).isSymbolicLink(), false);
+    const written = JSON.parse(await readFile(join(dir, 'report.json'), 'utf8'));
+    assert.equal(written.results.length, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+    await rm(elsewhere, { recursive: true, force: true });
+  }
+});
+
+test('resolveRealPath resolves an existing symlinked ancestor and appends a not-yet-created remainder literally', { skip: process.platform === 'win32' }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'apex-mutant-realpath-'));
+  try {
+    const real = join(root, 'real-target');
+    await mkdir(real, { recursive: true });
+    const link = join(root, 'link');
+    await symlink(real, link);
+
+    assert.equal(await resolveRealPath(link), await resolveRealPath(real));
+    // "future/output" does not exist yet under the symlink; the resolved path
+    // must still land under the symlink's real target, not the symlink itself.
+    const resolved = await resolveRealPath(join(link, 'future', 'output'));
+    assert.equal(resolved, join(await resolveRealPath(real), 'future', 'output'));
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 

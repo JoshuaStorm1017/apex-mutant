@@ -1,172 +1,172 @@
-# Review notes — Claude checkpoint 3
+# Review notes — Claude checkpoint 4
 
-For Codex's review pass. Everything here is offline/injected-validator work; no
-Salesforce CLI or org was available or used. See `HANDOFF.md` for the narrative
-version of this same work.
+Checkpoint 4 is a direct response to a focused Codex review of checkpoint 3 (`ea3958a`).
+Codex found one blocking security bug and several documentation-accuracy issues; both
+categories are addressed here. Everything below is offline/injected-validator work; no
+Salesforce CLI or org was available or used. See `HANDOFF.md` for the narrative version.
 
-## Commits this checkpoint (pushed to `main`, in order)
+## The blocker: output writes could follow a symlink
 
-Starting point: `1733b7f` (checkpoint 2, already on `origin/main` before this session).
+Codex's report: `cli.ts`'s `plan` command wrote `plan.json` with a plain `writeFile`,
+following any pre-existing symlink at that path; the `--output`-outside-package-directory
+guard was lexical-only and could be bypassed by a symlinked output directory.
 
-1. `af8bf94` — test: add project/runner/report integration tests; fix CLI npm-bin
-   symlink guard
-2. `8906eb0` — test: add end-to-end CLI coverage with injected validators
-3. `25a5157` — feat: add increment-decrement and unary-negation-removal operators;
-   add docs/COMPARISON.md
-4. `d818830` — docs: expand README, add CONTRIBUTING.md and SECURITY.md
+**Reproduced independently before fixing** — exact commands:
 
-Each was pushed with `git push origin HEAD:main` immediately after `gh api user
---jq .login` confirmed `JoshuaStorm1017` and after inspecting `git status --short`
-for anything unexpected before staging. All four CI runs on GitHub are green
-(`gh run list --repo JoshuaStorm1017/apex-mutant`), Node 22 and 24.
+```
+mkdir -p <fixture>/force-app
+echo '{ "packageDirectories": [{ "path": "force-app", "default": true }] }' > <fixture>/sfdx-project.json
+echo 'public class Demo { void m() { Boolean b = true; } }' > <fixture>/force-app/Demo.cls
+echo '<ApexClass/>' > <fixture>/force-app/Demo.cls-meta.xml
+mkdir -p <fixture>/.apex-mutant
+ln -sf <fixture>/force-app/Demo.cls <fixture>/.apex-mutant/plan.json
 
-## Self-validation: commands run and results
+# via tsx, calling the exported main() directly:
+main(['plan', '--project', '<fixture>'])
+
+# before the fix: <fixture>/force-app/Demo.cls now contains plan JSON, not Apex source.
+```
+
+Confirmed: `Demo.cls` was overwritten with the plan JSON. Second scenario, also
+reproduced: an `--output` given as a symlink whose real target sits inside a package
+directory passed the old lexical check (the literal path string didn't start with
+`force-app`) even though it resolved inside the package tree.
+
+**Fix** (see `HANDOFF.md` for the full description): extracted a `writeFileAtomic`
+helper into `report.ts` (temp file + `rename()`, which replaces a symlink at the
+destination rather than writing through it) and reused it for both `plan.json` (the
+actual reproduced bug) and `report.json`/`report.html` (already using this pattern
+inline, now shared). Added a `resolveRealPath` helper and switched the
+`--output`-outside-package-directories check in `cli.ts` to compare canonical
+(symlink-resolved) paths on both sides instead of literal strings.
+
+**Re-verified fixed**, same two scenarios, same exact commands — after the fix,
+`Demo.cls` is untouched and `plan.json` is a real file with correct content; the
+symlinked-output-directory case now throws `--output must be outside package
+directories.` as expected.
+
+**New regression tests** (12 total, `{ skip: process.platform === 'win32' }` where
+symlink creation needs elevated privileges):
+
+- `test/cli.test.ts`: "a pre-existing symlink at the plan.json output path never gets
+  written through" and "`--output` that is a symlink resolving into a package directory
+  is rejected."
+- `test/report.test.ts`: "writeReport never writes through a pre-existing symlink at
+  report.json/report.html" (this is the path the runner actually uses) and a direct unit
+  test of `resolveRealPath` against a symlinked ancestor with a not-yet-created nested
+  path.
 
 ```
 npm run check
 # typecheck: clean
-# test: 49/49 pass (0 fail, 0 skipped on this platform — 2 symlink tests are
-#   platform-gated to skip on win32, not skipped here)
+# test: 53/53 pass (up from 49)
 # build: clean
-
-npm run demo
-# Apex Mutant · 5 mutations planned  (unchanged from checkpoint 2 — the fixture
-#   doesn't contain any increment/decrement or unary-minus patterns)
-
-npm pack --dry-run
-# 27 files, 25.8 kB packed / 89.5 kB unpacked — only dist/**, README.md, LICENSE,
-#   package.json. No test files, no source .ts, no examples/, no docs/, no .git.
 ```
 
-**Installed-tarball bin smoke test** (done twice — once right after the symlink fix,
-once again at the very end against the final tree with the new operators and docs):
+## Documentation corrections (also from Codex's review)
 
-```
-npm run build && npm pack --silent
-npm install --prefix <isolated temp dir> <isolated temp dir>/apex-mutant-*.tgz
-<isolated temp dir>/node_modules/.bin/apex-mutant --help        # prints usage
-<isolated temp dir>/node_modules/.bin/apex-mutant plan --project <copy of examples/basic>
-# Apex Mutant · 5 mutations planned  — same 5 mutant IDs as the source-tree demo
-```
+1. **`docs/COMPARISON.md` falsely claimed "arithmetic-operator deletion" was
+   implemented.** It was not — only `increment-decrement` and `unary-negation-removal`
+   were added in checkpoint 3. Corrected, with an explanation of why
+   arithmetic-operator-deletion specifically wasn't attempted (needs a multi-token span
+   edit the current `add()` helper doesn't support).
+2. **The upstream operator count was wrong and internally inconsistent**: claimed 22,
+   listed 26 names underneath. Re-cloned the upstream repo at the same pinned commit and
+   recounted precisely: `ls src/mutator/*.ts | wc -l` → 30; 4 are non-operator helpers
+   (`astUtils.ts`, `baseListener.ts`, `baseReturnMutator.ts`, `mutationListener.ts`);
+   26 remain. Cross-checked against `grep -c '^| \*\*' README.md` on their README's
+   operator table → 26. Corrected throughout `docs/COMPARISON.md`.
+3. **`docs/COMPARISON.md` wrongly implied coverage-scoped test selection and mutation
+   grouping require abandoning validation-only `--dry-run`.** They don't — both need a
+   live org to query or verify against, not a different execution model. Only the
+   upstream project's org-mutate-and-restore execution and its paid third-party
+   local-runtime integration actually require that. Rewrote the "Recommendation"
+   section in `docs/COMPARISON.md` to separate these two categories explicitly.
+4. **Source citations now pin permalinks** to the exact evaluated commit
+   (`c3f95dbe9fbfd7e4c68c1efe873996fdfe455abc`) with line numbers, instead of bare
+   repo-relative paths.
+5. **The "no `SIGINT`/`SIGTERM` handler" finding is now explicitly labeled as static
+   source analysis** (`grep -rn "SIGINT\|SIGTERM\|process.on(" src` → no matches), not
+   reproduced live behavior. No org was available to actually interrupt a live run of
+   the upstream tool and observe the result.
+6. **Chronology correction — this is the one to read carefully.** Checkpoint 3's
+   `HANDOFF.md`/`REVIEW-NOTES.md` described the npm-bin symlink guard bug as if it were
+   found in pre-existing code ("the original direct-execution guard compared..."). This
+   was inaccurate. Checkpoint 2's actual shipped code (commit `1733b7f`) had **no
+   execution guard at all** — `main()` ran unconditionally at the bottom of `cli.ts`,
+   which was always correct for the installed npm bin (there was nothing to guard
+   against), just not unit-testable, since importing the module for a test would also
+   run `main()` against real `process.argv`. During checkpoint 3, adding
+   `main(argv, validate)` for in-process CLI testing required introducing a guard so
+   that importing the module in a test harness wouldn't also execute it — the first
+   version of that new guard (a raw `import.meta.url` string comparison) was itself
+   broken for the npm-installed-symlink case. This was caught via a real
+   `npm pack` + install smoke test and fixed before commit `af8bf94` was ever created —
+   that commit's diff already contains the fixed version; the broken intermediate
+   version existed only in local, uncommitted edits and was never pushed. So: this was a
+   bug Claude introduced as a side effect of adding testability, and fixed, within the
+   same checkpoint — not a latent defect inherited from checkpoint 2 that was merely
+   discovered. The commit message for `af8bf94` (already pushed, not rewritten per this
+   project's no-history-rewrite policy) reads ambiguously on this point ("fix the
+   direct-execution guard... the previous guard broke...") and could be misread the same
+   way; this file and `HANDOFF.md` are the corrected record.
+7. **Softened an absolute claim in `README.md`.** "Your own project files are never
+   edited" was stated unqualified in the "How it works" section. This is misleading
+   given (a) `plan`/`run` intentionally write output artifacts inside the project by
+   default, and (b) the blocker above was a real, demonstrated counterexample to an
+   unqualified version of that claim. Reworded to state precisely what's guaranteed
+   (Apex source under package directories is never touched by the mutation/validation
+   process; output writes are atomic and replace rather than follow a pre-existing
+   symlink at the destination) instead of an unconditional "nothing is ever written."
 
-This is the check that actually caught the npm-bin bug (see below) — the in-process
-CLI tests cannot see it, because `main()` is invoked directly with an in-memory
-`argv`, never through an actual npm-installed symlink.
+## Commit this checkpoint
 
-**End-to-end classification cases**, all via injected `Validator` functions (no real
-`sf`), spread across `test/runner.test.ts` and `test/cli.test.ts`: baseline pass,
-baseline fail (stops before any mutant), mutant killed, mutant survived, mutant
-compile-invalid (covered in `test/salesforce.test.ts`'s classification tests, which
-predate this checkpoint and were re-run, unchanged, as part of `npm run check`),
-timeout (stops the loop early), infrastructure error (stops the loop early, and
-separately: an unexpectedly-*throwing* validator is still classified as `error`
-rather than crashing the run), and cancellation via `AbortSignal` both before the
-baseline and mid-loop (preserves completed results, still cleans up the snapshot).
+Starting point: `ea3958a` (checkpoint 3, on `origin/main` before this session resumed).
+This checkpoint's fix, tests, and doc corrections are pushed as a single commit on top
+of it (`git log` on `main` has the authoritative hash), preceded by
+`gh api user --jq .login` confirming `JoshuaStorm1017` as usual.
 
-**Original-bytes-preserved / temp-copy-removed**: `test/runner.test.ts`'s "mutants are
-validated one at a time against a clean copy" test reads the snapshot's on-disk file
-content from *inside* the injected validator and asserts the non-mutated file is
-byte-identical to the original source while a different file's mutant is active —
-this is a stronger check than "the report is right," it's "the disk state during
-validation is right." Cleanup is asserted with `stat(snapshotDir)` rejecting
-(`ENOENT`) after every terminal path: success, baseline failure, mid-loop abort.
-
-**Safe output paths**: `test/cli.test.ts`'s "`--output` inside a package directory is
-rejected" plus `test/project.test.ts`'s "rejects file keys that would escape the
-snapshot directory" (the new `assertSafeRelativePath` defense-in-depth, see below).
-
-**Score/exit-code correctness**: full matrix in `test/report.test.ts` (see HANDOFF.md
-for the exact table) plus `test/cli.test.ts`'s threshold-below/threshold-met cases.
-
-**HTML escaping**: `test/report.test.ts` injects `<script>alert(1)</script>&"'` into
-every rendered field (file, original, replacement, message, outcome) and asserts none
-of it appears unescaped, plus asserts the report's CSP header blocks script execution
-as defense in depth.
-
-**Public staged-file/privacy review**: every `git add` this checkpoint was preceded by
-`git status --short` and, where multiple files were touched, `git diff --stat` to
-confirm nothing unexpected was staged. No credentials, org identifiers, or private
-handoff content were introduced. One accidental local mistake and its recovery is
-recorded below.
-
-## Known limitations (unchanged from HANDOFF.md, repeated here for review convenience)
+## Known limitations (unchanged, repeated for review convenience)
 
 - No live Salesforce org or CLI has ever been used to verify anything in this
-  repository, this checkpoint included. Every "verified" claim above is
-  injected-validator or fake-subprocess-based.
-- Windows support for `run` is undetermined; README now states a specific, sourced
-  reason (`spawn` + `shell:false` + npm's `.cmd` shims) rather than asserting either
-  way.
-- Coverage-scoped test selection and mutation grouping (see `docs/COMPARISON.md`)
-  are not implemented; both would need a live org to build and verify safely.
-
-## Comparison recommendation (full detail in `docs/COMPARISON.md`)
-
-Evaluated `scolladon/apex-mutation-testing` at commit `c3f95dbe9fbfd7e4c68c1efe873996fdfe455abc`
-(2026-08-25, v1.9.1) in an isolated temporary clone — never merged into this repo, no
-source copied. Ran its own offline unit suite there (103 files / 2136 tests, all
-pass) as supporting evidence, not as a claim about this repo.
-
-**Recommendation: differentiate, don't duplicate.** That tool mutates a live org Apex
-class body directly via the Tooling API and restores it afterward — verified in its
-source (`orgMutationTestBed.ts`), and verified to have **no `SIGINT`/`SIGTERM` handler**
-anywhere in its `src/` tree (a plain grep), meaning a hard interrupt during a run can
-leave the org's real class mutated with no automatic recovery. This repository's
-validation-only, never-touch-the-org design has no equivalent exposure, and that
-safety property is this project's actual differentiator — reaching feature parity
-(22 operators, org-mutate-and-restore, coverage-scoped selection, graph-coloring
-grouping, a paid third-party local-runtime integration) would mean abandoning it. The
-one gap closed this checkpoint (two new operators) was chosen specifically because it
-required no execution-model change and no org access to implement or verify.
-`docs/COMPARISON.md` also flags a scoring-design divergence worth knowing about:
-their tool counts `RuntimeError` (infrastructure/network failures) toward the score
-*numerator* as if it were a kill, which this repository's architecture contract
-deliberately does not do.
+  repository. Every "verified" claim is injected-validator or fake-subprocess-based.
+- Windows support for `run` is undetermined (documented, sourced reason given in
+  README, not an unverified claim either way).
+- Coverage-scoped test selection and mutation grouping are not implemented; both are
+  compatible with validation-only in principle but need a live org to build and verify
+  correctly (corrected framing this checkpoint, see `docs/COMPARISON.md`).
+- This checkpoint's fix addresses the specific symlink-following vulnerability Codex
+  found in `plan.json`/report output writing and the lexical-only `--output` package-dir
+  check. It does not constitute a general filesystem-security audit of this codebase;
+  no claim is made that no other local-path issue exists anywhere else in it.
 
 ## Risky decisions that need Codex's judgment, not just review
 
-1. **The npm-bin symlink fix's exact mechanism.** I changed the direct-execution
-   guard in `cli.ts` from a raw `import.meta.url` string comparison to comparing
-   `realpath()` of both `process.argv[1]` and the module's own path. I verified this
-   empirically (broken before, fixed after) with a real `npm pack` + isolated
-   install, twice. I have not verified it against every possible install topology
-   (e.g., a *second* level of symlinking, or a package manager other than npm that
-   installs bins differently, like pnpm's own symlink strategy). If Codex has
-   visibility into how this package might actually be installed in practice, that's
-   worth a second look — the fix is narrow (two `realpath` calls) but the failure
-   mode it fixes was total (the CLI silently did nothing at all when installed).
-2. **`assertSafeRelativePath` as defense-in-depth, not a reachable bug today.** I
-   added path-escape validation to `project.ts`'s `snapshotProject` and `runner.ts`
-   because `Project` is a public exported type and a hand-built one (not produced by
-   `readProject`) could carry an unsafe file key. Under the actual CLI flow this is
-   unreachable — `readProject` only ever produces safe keys. I judged this worth
-   fixing anyway since it's explicitly the kind of thing `HANDOFF.md`'s prior work
-   order flagged ("output paths/symlinks must not overwrite source"), but it's a
-   judgment call about how much defense-in-depth a library's public API surface
-   deserves, not a fix for an exploitable-today bug.
-3. **Choosing exactly two new operators, not more.** `docs/COMPARISON.md` shows a
-   6-vs-22 operator gap. I implemented the two (increment-decrement,
-   unary-negation-removal) that fit the existing single-token AST-visitor pattern
-   with no new risk. I did not attempt operators that need multi-token spans
-   (e.g., their `ArithmeticOperatorDeletion`, which removes an operator *and* one
-   operand) because that changes the `add()` helper's single-node contract and I judged
-   it needed more design thought than this checkpoint's scope, not because it's
-   infeasible. If more operator coverage is a priority, that's the next natural slice.
-4. **No `CHANGELOG.md`.** The work order suggested one "if useful." I judged it not
-   useful yet (no tagged releases to changelog) and documented that judgment in
-   `HANDOFF.md` instead of adding a stub file. Reversible if Codex disagrees.
-
-## One mistake made and corrected this checkpoint
-
-While running an installed-tarball smoke test, `npm init -y --prefix <temp dir>`
-did **not** respect `--prefix` for `npm init` specifically and instead wrote/reformatted
-`package.json` in this repo's own working directory (added `keywords`, `author`,
-`bugs`, `homepage`, `main`, `directories` fields and reformatted existing fields to
-multi-line). This was caught immediately by `git status --short` before staging
-anything, confirmed with `git diff package.json`, and reverted with
-`git checkout -- package.json` (safe: the change was uncommitted and the revert
-target was the last pushed commit). Nothing from this mistake was ever committed or
-pushed. Noting it here in case the same `npm init --prefix` behavior surprises a
-future agent doing a similar smoke test — prefer `npm --prefix <dir> install <tgz>`
-into a directory that already has a minimal `package.json` (or accept `npm install`'s
-own auto-created one) rather than `npm init --prefix`.
+1. **Scope of the symlink fix.** I fixed the two specific paths Codex identified
+   (`plan.json` writing, and the `--output` package-directory-escape check) plus
+   extended the same protection to `report.json`/`report.html` (which already used the
+   safe pattern, now via the shared helper). I did not attempt a broader audit for
+   every place this codebase touches the filesystem with a user-influenced path — for
+   example, `snapshotProject`'s writes go into a freshly `mkdtemp`'d directory with a
+   random name, which I judged sufficiently low-risk to leave out of scope (an attacker
+   would need to predict or race a fresh random temp directory name to plant a symlink
+   in it first), but that judgment wasn't re-verified with the same rigor as the fix
+   above.
+2. **`resolveRealPath`'s recursive-ancestor-walk approach.** For a not-yet-existing
+   `--output` path, it walks up parents until it finds one that exists, resolves that,
+   and appends the rest literally. This assumes nothing under the not-yet-existing
+   remainder can itself be a symlink at the time of the check — true at check time by
+   definition (those paths don't exist yet), but there is a theoretical TOCTOU gap
+   between this check and the later `mkdir(..., { recursive: true })` inside
+   `writeFileAtomic` if something else creates a symlink there in between. I judged this
+   an acceptable, standard TOCTOU tradeoff (the same class of gap exists in most
+   path-validation code that doesn't hold a directory file descriptor open throughout),
+   not something to engineer around with `O_NOFOLLOW`-style primitives for a CLI tool
+   at this stage, but that's a judgment call, not a proof of safety.
+3. **Chronology correction's honesty vs. the already-pushed commit message.** I did not
+   amend or rewrite commit `af8bf94`'s message (per this project's git-safety rules:
+   never amend a published commit). The corrected chronology lives only in this file and
+   `HANDOFF.md`, both current-state documents, not in git history itself. If Codex or
+   the owner would prefer a more permanent correction (e.g., a follow-up commit whose
+   message explicitly references and clarifies `af8bf94`), that's a call for them, not
+   something I did unilaterally.

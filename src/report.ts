@@ -1,7 +1,34 @@
-import { mkdir, writeFile, rename } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, writeFile, rename, realpath } from 'node:fs/promises';
+import { dirname, basename, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Report, Outcome } from './types.js';
+
+/** Resolve the real (symlink-free) path of `path`, or of its nearest existing
+ * ancestor with the not-yet-created remainder appended, so callers can compare
+ * canonical locations even before `mkdir` has created the target directory. */
+export async function resolveRealPath(path: string): Promise<string> {
+  try {
+    return await realpath(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    const parent = dirname(path);
+    if (parent === path) throw error;
+    return join(await resolveRealPath(parent), basename(path));
+  }
+}
+
+/** Write `directory/name` without ever following a pre-existing symlink at that
+ * path: the content lands in a fresh randomly-named temp file first, and `rename`
+ * — which replaces a symlink itself rather than writing through it — makes the
+ * swap atomic. This is what stops a planted or leftover symlink at an output
+ * path (e.g. `.apex-mutant/plan.json` -> some unrelated file) from silently
+ * overwriting whatever it points at. */
+export async function writeFileAtomic(directory: string, name: string, content: string, mode = 0o600): Promise<void> {
+  await mkdir(directory, { recursive: true });
+  const temporary = join(directory, `.${name}.${randomUUID()}.tmp`);
+  await writeFile(temporary, content, { mode });
+  await rename(temporary, join(directory, name));
+}
 
 export function summarize(report: Report) {
   const counts: Record<Outcome, number> = { killed: 0, survived: 0, invalid: 0, timeout: 0, error: 0 };
@@ -21,15 +48,8 @@ export function renderHtml(report: Report): string {
 }
 
 export async function writeReport(directory: string, report: Report): Promise<void> {
-  await mkdir(directory, { recursive: true });
-  for (const [name, content] of [
-    ['report.json', JSON.stringify({ ...report, summary: summarize(report) }, null, 2) + '\n'],
-    ['report.html', renderHtml(report)],
-  ]) {
-    const temporary = join(directory, `.${name}.${randomUUID()}.tmp`);
-    await writeFile(temporary, content, { mode: 0o600 });
-    await rename(temporary, join(directory, name));
-  }
+  await writeFileAtomic(directory, 'report.json', JSON.stringify({ ...report, summary: summarize(report) }, null, 2) + '\n');
+  await writeFileAtomic(directory, 'report.html', renderHtml(report));
 }
 
 export function reportExitCode(report: Report, threshold = 0): number {

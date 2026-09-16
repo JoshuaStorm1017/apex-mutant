@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, lstat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -92,6 +92,40 @@ test('--output inside a package directory is rejected before any mutation runs',
   const root = await fixtureProject();
   try {
     await assert.rejects(main(['plan', '--project', root, '--output', join(root, 'force-app', 'reports')]), /--output must be outside package directories/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('--output that is a symlink resolving into a package directory is rejected, not just a lexical mismatch', { skip: process.platform === 'win32' }, async () => {
+  const root = await fixtureProject();
+  try {
+    const insidePackage = join(root, 'force-app', 'reports');
+    await mkdir(insidePackage, { recursive: true });
+    const outputLink = join(root, 'output-link');
+    await symlink(insidePackage, outputLink);
+    // The literal string "output-link" does not start with "force-app", so a purely
+    // lexical relative() check on the un-resolved paths would wrongly accept this.
+    await assert.rejects(main(['plan', '--project', root, '--output', outputLink]), /--output must be outside package directories/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a pre-existing symlink at the plan.json output path never gets written through: the source it points at is untouched', { skip: process.platform === 'win32' }, async () => {
+  const root = await fixtureProject();
+  const output = join(root, 'out');
+  const source = join(root, 'force-app', 'main', 'default', 'classes', 'Foo.cls');
+  const originalSource = await readFile(source, 'utf8');
+  try {
+    await mkdir(output, { recursive: true });
+    const planPath = join(output, 'plan.json');
+    await symlink(source, planPath);
+    await capture(() => main(['plan', '--project', root, '--output', output]));
+    assert.equal(await readFile(source, 'utf8'), originalSource, 'the real Apex source must never be overwritten');
+    assert.equal((await lstat(planPath)).isSymbolicLink(), false, 'the symlink must be replaced by a real file, not written through');
+    const plan = JSON.parse(await readFile(planPath, 'utf8'));
+    assert.equal(plan.total, 2);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

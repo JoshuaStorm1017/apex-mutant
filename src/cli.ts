@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
 import { resolve, relative, isAbsolute, sep, join } from 'node:path';
-import { mkdir, writeFile, realpath } from 'node:fs/promises';
+import { realpath } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { readProject, planProject } from './project.js';
 import { runMutations } from './runner.js';
 import { validateWithSalesforce } from './salesforce.js';
-import { summarize, reportExitCode } from './report.js';
+import { summarize, reportExitCode, resolveRealPath, writeFileAtomic } from './report.js';
 import type { Validator } from './types.js';
 
 const help = `Apex Mutant — mutation testing for Salesforce Apex
@@ -67,17 +67,21 @@ export async function main(argv: string[] = process.argv.slice(2), validate: Val
   const threshold = numberOption(values.threshold, 0, '--threshold', 0, 100);
   const project = await readProject(values.project ?? '.');
   const output = resolve(values.output ?? join(project.root, '.apex-mutant'));
-  // Never place report files among metadata being validated.
+  // Never place report files among metadata being validated. Compare canonical
+  // (symlink-resolved) paths, not the literal strings: an --output directory that
+  // is, or sits behind, a symlink into a package directory must not pass this check
+  // just because its own path text looks disjoint from the package directory's.
+  const realOutput = await resolveRealPath(output);
   for (const directory of project.packageDirs) {
-    const path = relative(resolve(project.root, directory), output);
+    const realPackageDir = await resolveRealPath(resolve(project.root, directory));
+    const path = relative(realPackageDir, realOutput);
     if (!path || (!path.startsWith(`..${sep}`) && path !== '..' && !isAbsolute(path))) throw new Error('--output must be outside package directories.');
   }
   const mutations = planProject(project, { include: values.include, exclude: values.exclude,
     operators: values.operators?.split(',').map((v) => v.trim()).filter(Boolean), maxMutants });
   if (command === 'plan') {
     const plan = { schemaVersion: 1, total: mutations.length, mutations };
-    await mkdir(output, { recursive: true });
-    await writeFile(join(output, 'plan.json'), JSON.stringify(plan, null, 2) + '\n', { mode: 0o600 });
+    await writeFileAtomic(output, 'plan.json', JSON.stringify(plan, null, 2) + '\n');
     if (values.json) console.log(JSON.stringify(plan, null, 2));
     else {
       console.log(`Apex Mutant · ${mutations.length} mutations planned`);

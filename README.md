@@ -21,10 +21,21 @@ for how this compares to the more mature `apex-mutation-testing` sf plugin.
    separately, as JSON and as a self-contained HTML file.
 
 Every Salesforce request — baseline and mutants — is `sf project deploy start --dry-run`.
-**Nothing is ever deployed. Your org's real metadata is never changed by this tool,**
-and your own project files are never edited; mutations are only ever applied to a
-throwaway temporary copy that is deleted when the run ends (success, failure, or
-cancellation).
+**Nothing is ever deployed; your org's real metadata is never changed by this tool.**
+Your Apex source is never edited either — every mutation is applied only to a throwaway
+temporary copy that is deleted when the run ends (success, failure, or cancellation),
+never to the files under your package directories.
+
+That's a narrower claim than "this tool never writes into your project," and
+deliberately so: `plan` and `run` both write output artifacts (`plan.json`, `report.json`,
+`report.html`) into `--output`, which defaults to `.apex-mutant/` **inside** your
+project. Those writes are atomic — each one lands in a fresh temp file first, then an
+OS-level rename swaps it into place, which replaces a pre-existing symlink at the
+destination rather than following it through to whatever it points at — specifically so
+that a leftover or planted symlink at an output path can't redirect the write into your
+source. That mechanism (and the report it fixed a real, demonstrated bug in) is
+described in `HANDOFF.md`; the guarantee here is "this specific defense exists," not
+"nothing outside package directories can ever be written."
 
 ## Install
 
