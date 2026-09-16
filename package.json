@@ -1,0 +1,23 @@
+{
+  "name": "apex-mutant",
+  "version": "0.1.0-alpha.1",
+  "description": "Parser-based mutation testing for Salesforce Apex",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": "^22.13.0 || >=24" },
+  "bin": { "apex-mutant": "dist/cli.js" },
+  "exports": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "README.md", "LICENSE"],
+  "repository": { "type": "git", "url": "https://github.com/JoshuaStorm1017/apex-mutant.git" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "tsx --test test/*.test.ts",
+    "check": "npm run typecheck && npm test && npm run build",
+    "demo": "tsx src/cli.ts plan --project examples/basic",
+    "prepack": "npm run build"
+  },
+  "dependencies": { "@apexdevtools/apex-parser": "5.2.0" },
+  "devDependencies": { "@types/node": "^22.0.0", "tsx": "^4.0.0", "typescript": "^5.9.0" }
+}

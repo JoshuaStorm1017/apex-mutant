@@ -1,0 +1,13 @@
+node_modules/
+dist/
+coverage/
+.apex-mutant/
+mutation-report*
+*.tgz
+.env
+.env.*
+.sf/
+.sfdx/
+*.key
+*.pem
+.DS_Store
