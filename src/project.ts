@@ -13,6 +13,12 @@ export interface Project {
 const ignored = new Set(['node_modules', '.git', '.sf', '.sfdx', '.apex-mutant', 'dist', 'coverage']);
 const apexFile = /\.(cls|trigger)(-meta\.xml)?$/i;
 const unix = (path: string) => path.split(sep).join('/');
+// Defense in depth: Project is a public type, so a hand-built one could carry an unsafe key.
+export function assertSafeRelativePath(path: string): void {
+  if (!path || isAbsolute(path) || path.split('/').some((part) => part === '' || part === '.' || part === '..')) {
+    throw new Error(`Unsafe file path in project snapshot: ${path}`);
+  }
+}
 
 export async function readProject(directory: string): Promise<Project> {
   const root = resolve(directory);
@@ -89,8 +95,12 @@ export async function snapshotProject(project: Project): Promise<{ directory: st
       if (typeof project.config[key] === 'string') config[key] = project.config[key];
     }
     await writeFile(join(directory, 'sfdx-project.json'), JSON.stringify(config, null, 2));
-    for (const path of project.packageDirs) await mkdir(join(directory, path), { recursive: true });
+    for (const path of project.packageDirs) {
+      assertSafeRelativePath(path);
+      await mkdir(join(directory, path), { recursive: true });
+    }
     for (const [file, content] of project.files) {
+      assertSafeRelativePath(file);
       await mkdir(resolve(directory, file, '..'), { recursive: true });
       await writeFile(join(directory, file), content);
     }

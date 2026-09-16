@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
 import { resolve, relative, isAbsolute, sep, join } from 'node:path';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, realpath } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { readProject, planProject } from './project.js';
 import { runMutations } from './runner.js';
 import { validateWithSalesforce } from './salesforce.js';
 import { summarize, reportExitCode } from './report.js';
+import type { Validator } from './types.js';
 
 const help = `Apex Mutant — mutation testing for Salesforce Apex
 
@@ -46,8 +48,8 @@ function numberOption(value: string | undefined, fallback: number, name: string,
   return parsed;
 }
 
-async function main() {
-  const { values, positionals } = parseArgs({ allowPositionals: true, strict: true, options: {
+export async function main(argv: string[] = process.argv.slice(2), validate: Validator = validateWithSalesforce): Promise<void> {
+  const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, strict: true, options: {
     help: { type: 'boolean', short: 'h' }, json: { type: 'boolean' },
     project: { type: 'string' }, include: { type: 'string', multiple: true }, exclude: { type: 'string', multiple: true },
     operators: { type: 'string' }, 'max-mutants': { type: 'string' }, output: { type: 'string' },
@@ -96,7 +98,7 @@ async function main() {
     const report = await runMutations(project, mutations, {
       targetOrg: values['target-org'], tests, waitMinutes, timeoutMs, output, signal: abort.signal,
       onProgress: (done, total, result) => console.error(`[${done}/${total}] ${result.outcome}`),
-    }, validateWithSalesforce);
+    }, validate);
     const summary = summarize(report);
     if (values.json) console.log(JSON.stringify({ ...report, summary }, null, 2));
     else {
@@ -109,7 +111,19 @@ async function main() {
   } finally { process.removeListener('SIGINT', cancel); process.removeListener('SIGTERM', cancel); }
 }
 
-main().catch((error: unknown) => {
-  console.error(`Apex Mutant: ${error instanceof Error ? error.message : 'Unexpected failure.'}`);
-  process.exitCode = 2;
-});
+// npm's node_modules/.bin entries are symlinks: process.argv[1] is the symlink path while
+// import.meta.url is this module's real path, so compare resolved real paths, not raw strings.
+async function isDirectlyExecuted(): Promise<boolean> {
+  if (!process.argv[1]) return false;
+  try {
+    const [invoked, self] = await Promise.all([realpath(process.argv[1]), realpath(fileURLToPath(import.meta.url))]);
+    return invoked === self;
+  } catch { return false; }
+}
+
+if (await isDirectlyExecuted()) {
+  main().catch((error: unknown) => {
+    console.error(`Apex Mutant: ${error instanceof Error ? error.message : 'Unexpected failure.'}`);
+    process.exitCode = 2;
+  });
+}

@@ -1,7 +1,7 @@
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { applyMutation } from './mutations.js';
-import { snapshotProject, type Project } from './project.js';
+import { snapshotProject, assertSafeRelativePath, type Project } from './project.js';
 import { writeReport } from './report.js';
 import type { Mutation, Report, ValidationOptions, Validator, ExecutionResult } from './types.js';
 
@@ -44,6 +44,7 @@ export async function runMutations(project: Project, mutations: Mutation[], opti
       if (options.signal?.aborted) break;
       const source = project.files.get(mutation.file);
       if (source === undefined) throw new Error('Mutation references a file outside the project snapshot.');
+      assertSafeRelativePath(mutation.file);
       const filename = join(snapshot.directory, mutation.file);
       await writeFile(filename, applyMutation(source, mutation));
       let result: ExecutionResult;
