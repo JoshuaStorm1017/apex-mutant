@@ -25,6 +25,7 @@ export interface ValidationOptions {
   tests: string[];
   waitMinutes: number;
   timeoutMs: number;
+  signal?: AbortSignal;
 }
 export type Validator = (options: ValidationOptions) => Promise<ExecutionResult>;
 export interface Report {
