@@ -80,12 +80,28 @@ test('rejects stale source even if the edited token and offset are unchanged', (
   assert.notEqual(generateMutations(source + '\n', 'Example.cls')[0].id, mutant.id);
 });
 
-test('parses triggers and excludes concatenation, compound assignments and unary arithmetic', () => {
+test('parses triggers, mutates unary negation and increment/decrement, and excludes concatenation and compound assignments', () => {
   const source = `trigger Example on Account (before insert) {
     Integer a = -1; a += 1; a++; String text = 'x' + 'y';
     if (Trigger.isInsert && true) { a = a - 1; }
   }`;
-  assert.deepEqual(generateMutations(source, 'Example.trigger').map(m => m.original), ['&&', 'true', '-']);
+  const mutants = generateMutations(source, 'Example.trigger');
+  assert.deepEqual(mutants.map(m => [m.original, m.replacement, m.operator]), [
+    ['-', '', 'unary-negation-removal'], ['++', '--', 'increment-decrement'],
+    ['&&', '||', 'logical-connector'], ['true', 'false', 'boolean-literal'],
+    ['-', '+', 'arithmetic'],
+  ]);
+});
+
+test('swaps prefix/postfix increment and decrement and removes unary negation, but leaves unary plus alone', () => {
+  const source = wrap('Integer i = 0; i++; i--; ++i; --i; Integer x = -a; Integer y = +a;');
+  const mutants = generateMutations(source, 'Example.cls');
+  assert.deepEqual(mutants.map(m => [m.original, m.replacement, m.operator]), [
+    ['++', '--', 'increment-decrement'], ['--', '++', 'increment-decrement'],
+    ['++', '--', 'increment-decrement'], ['--', '++', 'increment-decrement'],
+    ['-', '', 'unary-negation-removal'],
+  ]);
+  for (const mutant of mutants) assert.equal(applyMutation(source, mutant), source.slice(0, mutant.start) + mutant.replacement + source.slice(mutant.end));
 });
 
 test('supports Apex equality variants and preserves comments inside boundary operators', () => {

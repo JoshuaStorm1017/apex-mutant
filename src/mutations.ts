@@ -4,6 +4,7 @@ import {
   Arth1ExpressionContext, Arth2ExpressionContext, ClassBodyDeclarationContext,
   CmpExpressionContext, EqualityExpressionContext, LiteralPrimaryContext,
   LogAndExpressionContext, LogOrExpressionContext, NegExpressionContext,
+  PostOpExpressionContext, PreOpExpressionContext,
   SoqlLiteralContext, SoslLiteralContext, TypeDeclarationContext,
   type ApexParserRuleContext, type ApexTerminalNode,
 } from '@apexdevtools/apex-parser';
@@ -96,6 +97,14 @@ export function generateMutations(source: string, file: string): Mutation[] {
       if (literal) add(literal, literal.getText().toLowerCase() === 'true' ? 'false' : 'true', 'boolean-literal');
     } else if (node instanceof NegExpressionContext) {
       add(node.BANG(), '', 'negation-removal');
+    } else if (node instanceof PostOpExpressionContext) {
+      const inc = node.INC();
+      add(inc ?? node.DEC(), inc ? '--' : '++', 'increment-decrement');
+    } else if (node instanceof PreOpExpressionContext) {
+      const inc = node.INC();
+      const dec = node.DEC();
+      if (inc || dec) add(inc ?? dec, inc ? '--' : '++', 'increment-decrement');
+      else if (node.SUB()) add(node.SUB(), '', 'unary-negation-removal');
     } else if (node instanceof Arth1ExpressionContext) {
       if (node.MUL()) add(node.MUL(), '/', 'arithmetic');
       else add(node.DIV(), '*', 'arithmetic');
