@@ -18,7 +18,13 @@ for how this compares to the more mature `apex-mutation-testing` sf plugin.
    isolated temporary copy of your source. If the baseline fails, stop — nothing else
    is submitted.
 4. Report killed, survived, invalid, timeout, and infrastructure-error mutants
-   separately, as JSON and as a self-contained HTML file.
+   separately, as JSON and as a self-contained HTML file — plus, for each surviving
+   mutant, a located finding with a concrete suggested assertion, and optional
+   CSV/SARIF/Markdown exports for whatever tracks your work.
+
+Reporting is **advisory by default**: the mutation score is reported, and it never
+changes the exit code unless you explicitly opt into gating (see
+[Advisory by default](#advisory-by-default-and-what-to-prove-before-enforcing)).
 
 Every Salesforce request — baseline and mutants — is `sf project deploy start --dry-run`.
 **Nothing is ever deployed; your org's real metadata is never changed by this tool.**
@@ -84,6 +90,12 @@ on stdout, or `--include`/`--exclude`/`--operators`/`--max-mutants` to narrow it
 node dist/cli.js run --target-org my-scratch-org --tests DiscountServiceTest \
   --project examples/basic
 ```
+
+That is an advisory run: it reports the score, the findings, and the safeguards it
+enforced, and exits `0` whatever the score is. Add `--export all --work-item ABC-123` for
+portable artifacts stamped with your own identifier, and `--enforce --threshold 80` only
+once you have the evidence listed under
+[Advisory by default](#advisory-by-default-and-what-to-prove-before-enforcing).
 
 ### Prerequisites
 
@@ -153,7 +165,10 @@ apex-mutant run --target-org <alias> --tests <TestClass> [options]
 | `--tests <names>` | run | Test class names, comma-separated or repeatable |
 | `--wait <minutes>` | run | Salesforce CLI `--wait` per validation (default 10) |
 | `--timeout <seconds>` | run | Hard local process timeout per validation (default 660) |
-| `--threshold <percent>` | run | Fail (exit 1) below this mutation score (default 0) |
+| `--enforce` | run | Opt in to gating on the score; requires `--threshold`. Off by default |
+| `--threshold <percent>` | run | Score to gate on; only meaningful together with `--enforce` |
+| `--export <formats>` | run | Also write `csv`, `sarif`, `md` (comma-separated, or `all`) |
+| `--work-item <id>` | run | Identifier recorded in the report and every export; repeatable |
 
 ### Mutation operators
 
@@ -194,19 +209,107 @@ Exit codes from `run`:
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Run completed and the score met `--threshold` |
-| `1` | Run completed but the score is below `--threshold` |
-| `2` | Incomplete run, baseline failure, any unresolved `error`/`timeout`, or no score available |
+| `0` | The run produced a readable result (advisory mode always ends here when the run completed) |
+| `1` | **Only with `--enforce`:** the run completed and the score is below `--threshold` |
+| `2` | The run produced no readable result: baseline failure, incomplete run, any unresolved `error`/`timeout`, or no score available |
 | `130` | Canceled (`Ctrl+C`); already-completed results are preserved in the report |
+
+Exit code `2` is not a quality gate and is not suppressed in advisory mode: it means the
+tool produced no evidence at all, which is a different thing from tests scoring badly.
 
 `plan` exits `2` if the filters you gave produced zero mutations, so you notice an
 empty selection instead of silently doing nothing.
+
+## Advisory by default, and what to prove before enforcing
+
+A mutation score is evidence about your tests, not a verdict on a build. `run` therefore
+starts in **advisory mode**: the score is reported everywhere and gates nothing.
+
+```bash
+apex-mutant run --target-org my-scratch --tests DiscountServiceTest     # advisory
+apex-mutant run --target-org my-scratch --tests DiscountServiceTest \
+  --enforce --threshold 80                                             # opt-in gate
+```
+
+Both halves of the gate must be explicit. `--threshold` without `--enforce` is rejected
+(it would silently do nothing) and `--enforce` without `--threshold` is rejected (it
+would invent a number nobody chose). Machine-readable output follows the same rule: SARIF
+results are emitted at level `note` in advisory mode, at most `warning` under `--enforce`,
+and **never** at `error`.
+
+Every report restates what mutation testing does and does not cover, and carries this
+checklist of evidence to gather from your own runs before wiring a score into CI:
+
+1. **Runtime** — a full run finishes inside the time your pipeline can afford, measured on your own codebase.
+2. **Stability** — repeated runs on unchanged source produce the same outcomes.
+3. **Scope** — the mutants and tests a run covers are the ones you intend to gate on.
+4. **Restoration safety** — every run happens in a disposable or provably restored org, with evidence retained.
+5. **Equivalent mutants** — you have a way to record and exclude mutants no test could ever kill.
+6. **False positives** — inconclusive outcomes (`invalid`, `timeout`, `error`) are understood and don't silently move the score.
+
+apex-mutant cannot supply those for you, which is exactly why it ships the checklist
+instead of a default threshold.
+
+## Findings: what to do about a surviving mutant
+
+A score on its own is not an action. Every report (HTML, `report.json`, and every export)
+turns the run into prioritized findings:
+
+- **Test gaps** — one per surviving mutant, with its file, line, column, the exact change
+  that survived, how many test methods ran against it, and a suggested assertion specific
+  to the operator class. Operators whose survivors are more often behaviorally equivalent
+  (boundary and arithmetic changes) are marked `equivalenceRisk: moderate` and their
+  suggested action says to record an equivalent mutant rather than invent a test. That is
+  a heuristic about the operator, not a proof about your line — apex-mutant does no
+  semantic analysis.
+- **Unproven mutants** — `invalid`, `timeout`, and `error` mutants, reported separately and
+  ranked below gaps, because they prove nothing about test quality in either direction.
+- **Run quality** — a failed baseline or a run that stopped short, so a partial result is
+  never read as a clean one.
+- **Hotspots** — files ranked by surviving mutants and weakest per-file score: where the
+  assertion debt actually concentrates.
+
+## Execution safeguards recorded in every report
+
+The report records what apex-mutant can actually attest about the run, rather than
+repeating the guarantees in this README:
+
+| Field | What it records |
+| --- | --- |
+| `safeguards.validator` | Which validator ran, by name |
+| `safeguards.validationOnly` | `true` only for the built-in `sf project deploy start --dry-run` path. A caller-supplied validator (library API) is recorded as un-attested, never assumed safe |
+| `safeguards.orgCheck` | The `sf org list auth` classification that was enforced before anything was sent |
+| `safeguards.snapshotIsolated` | Mutants were applied only inside the temporary snapshot copy |
+| `safeguards.sourceIntegrity` | Every project file re-read after the run and compared byte-for-byte with what was read before it. `verified: false` means the check could not be completed — never that the source is unchanged |
+
+## Portable exports and work-item traceability
+
+`--export` writes tool-agnostic artifacts next to `report.json`/`report.html`, with the
+same symlink-safe atomic write:
+
+| Format | File | Use |
+| --- | --- | --- |
+| `csv` | `findings.csv` | One row per finding, with run metadata on every row. Values starting with `=`, `+`, `-`, or `@` are prefixed with `'` so a spreadsheet can't evaluate a source snippet as a formula |
+| `sarif` | `report.sarif` | SARIF 2.1.0 for any tool that ingests static-analysis results |
+| `md` | `summary.md` | A paste-ready summary: mode, safeguards, findings with suggested actions, hotspots, readiness checklist |
+
+`--work-item ABC-123` (repeatable) stamps your own identifiers into the report and every
+export, so a run can be attached to whatever tracks your work. apex-mutant never contacts
+any such system; the identifiers are recorded and echoed, nothing more. They're validated
+up front (letters, digits, `.`, `_`, `-`, `/`, 1–64 characters) rather than sanitized
+afterwards.
+
+`report.json` is `schemaVersion: 2` and carries `tool`, `policy`, `traceability`, and
+`safeguards` alongside the results, plus derived `summary`, `findings`, `hotspots`, and
+the readiness checklist.
 
 ## Report privacy
 
 `run` writes `report.json` and `report.html` into `--output` (default `.apex-mutant/`,
 git-ignored) after every single mutant, so a killed process still leaves a readable
-partial report. `report.html` is a single self-contained file: no external scripts, no
+partial report. Requested exports (`findings.csv`, `report.sarif`, `summary.md`) are
+written once at the end of the run, including when the baseline never passed — a failed
+run is reportable too. They contain the same source snippets and are equally private. `report.html` is a single self-contained file: no external scripts, no
 CDN assets, and an explicit `Content-Security-Policy: script-src 'none'` — it never
 phones home and works fully offline. It does contain your source snippets (the original
 and mutated lines) and Salesforce CLI outcome classifications, never raw CLI output or

@@ -3,6 +3,88 @@
 Concise, evidence-based log per checkpoint for Codex's medium-depth review. No
 Salesforce CLI or org is available or used anywhere in this log.
 
+## Checkpoint E — advisory-first reporting, findings, safeguard evidence, portable exports
+
+Source of the requirements: external review feedback on this project, turned into
+generic product requirements. Nothing organization-specific is encoded in the repo —
+the readiness checklist and scope statement in `src/policy.ts` are engineering criteria,
+not anyone's policy, and no employer, org name, or internal standard appears anywhere.
+
+**What changed**
+
+- `src/policy.ts` (new): `ENFORCEMENT_READINESS` (6 evidence items), `SCOPE_STATEMENT`
+  (what mutation testing does *not* cover), `advisoryNotice`, `isConclusive`.
+- `src/findings.ts` (new): per-operator guidance (what a survivor of each operator class
+  actually means, plus the assertion that would kill it), `buildFindings`, `fileHotspots`.
+- `src/exports.ts` (new): CSV/SARIF/Markdown renderers, format parsing, work-item
+  validation, `writeExports`.
+- `src/version.ts` (new): tool name/version for artifact provenance, pinned to
+  package.json by `test/version.test.ts`.
+- `src/types.ts`: `Report` is `schemaVersion: 2` with `tool`, `policy`, `traceability`,
+  `safeguards`; `EnforcementPolicy`, `Traceability`, `SourceIntegrity`, `RunSafeguards`.
+- `src/report.ts`: `reportExitCode(report)` reads the policy from the report (breaking
+  API change from `reportExitCode(report, threshold)`); HTML gained advisory banner,
+  findings, hotspots, safeguards, and readiness sections; `report.json` gained derived
+  `findings`/`hotspots`/`enforcementReadiness`/`scope`.
+- `src/project.ts`: `verifySourceIntegrity` — re-reads every project file after a run.
+- `src/runner.ts`: builds the v2 report, validates the policy and work items before any
+  work, records safeguards, runs the integrity check, writes exports.
+- `src/cli.ts`: `--enforce`, `--export`, `--work-item`; `--threshold` now requires
+  `--enforce`; prints the advisory notice and the top findings with their actions.
+
+**Verification performed (all offline; no Salesforce CLI or org was used)**
+
+- `npm run check`: typecheck + **104 tests** (73 → 104; 31 added, 2 rewritten) + build,
+  all passing. `npm run demo` unchanged at 5 mutants.
+- End-to-end artifact check against `examples/basic` with an injected validator (a
+  throwaway script outside the repo, not committed): produced `report.json`,
+  `report.html`, `findings.csv`, `report.sarif`, `summary.md` for a 5-mutant run and
+  inspected each by hand. Two defects were found this way and fixed before committing:
+  (1) Markdown escaped `|` in prose as well as in table cells, rendering `&& → \|\|`
+  in a heading — now escaped in table cells only, with a test pinning both halves;
+  (2) confirmed the CSV formula-injection defusal actually fires on real output (the
+  `= → (removed)` conditional-boundary cell is written as `"'= → (removed)"`).
+- Adversarial cases covered by the new tests rather than by inspection: an injected
+  validator is never recorded as validation-only; an in-memory project reports source
+  integrity as `verified: false` (not `unchanged: true`); a validator that edits the
+  developer's source mid-run is caught and named in the report; `--threshold` alone and
+  `--enforce` alone are both rejected; invalid work items and unknown export formats are
+  rejected before a run starts; SARIF emits no `error` level in either mode; HTML escapes
+  the new caller-supplied safeguard/traceability fields.
+
+**Judgment calls**
+
+- *Exit code 2 still fires in advisory mode.* Advisory means the **score** never fails
+  anything. A failed baseline, an incomplete run, or an environment error means the tool
+  produced no evidence at all — reporting that as success would be the dishonest option,
+  and it is not a quality gate. Stated explicitly in README and `--help`.
+- *`--threshold` without `--enforce` is an error, not a warning.* It previously worked
+  (defaulting to 0) and now fails, which is a breaking CLI change at alpha. A threshold
+  that silently does nothing is worse than an error that says why.
+- *`validationOnly` is false for any caller-supplied validator*, including the ones the
+  test suite injects. A `Validator` is arbitrary code; apex-mutant cannot attest what it
+  sends to an org, so the report says "not attested" rather than inheriting the built-in
+  path's guarantee.
+- *`equivalenceRisk` is a per-operator heuristic, labelled as one.* Boundary and
+  arithmetic survivors are marked `moderate` and their suggested action says to record an
+  equivalent mutant instead of inventing a test. No semantic analysis is performed and
+  none is claimed.
+- *Findings are derived, never stored in the report.* `report.json` is written after
+  every mutant; storing findings would let a partially-written report carry stale ones.
+- *Work items are validated up front, not sanitized afterwards.* They end up in CSV,
+  SARIF, and Markdown that other systems parse; a conservative accepted shape is safer
+  than post-hoc escaping in three formats.
+- *`docs/REQUIREMENTS.md` lists what is still missing.* Equivalent-mutant suppression
+  (G1) and run-to-run stability evidence (G3) are gaps, named as gaps, with the
+  acceptance test each needs — including in `docs/TECHNICAL-REVIEW.md`'s acceptance
+  matrix, so the gap travels with the document a reviewer reads.
+
+**Unchanged limits**
+
+No Salesforce CLI, org, or Windows machine was used. Everything above is verified with
+injected validators, real temp-directory projects, and platform simulation — same
+standard as every previous checkpoint.
+
 ## Checkpoint D — docs/TECHNICAL-REVIEW.md, SECURITY.md correction (milestone complete)
 
 Final slice of the "easier to pilot/review externally" milestone (A–D). No code

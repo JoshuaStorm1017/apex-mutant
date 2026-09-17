@@ -179,7 +179,7 @@ test('assertOutputOutsidePackageDirs rejects a direct, a not-yet-created nested,
   }
 });
 
-test('reportExitCode: 2 for incomplete, failed baseline, unresolved error/timeout, or no score; 1 below threshold; 0 otherwise', () => {
+test('reportExitCode: 2 when the run produced no readable result; the score only gates the exit code in enforce mode', () => {
   const killed = mutation({ outcome: 'killed' });
   const survived = mutation({ outcome: 'survived' });
 
@@ -193,4 +193,35 @@ test('reportExitCode: 2 for incomplete, failed baseline, unresolved error/timeou
   assert.equal(reportExitCode(report({ results: [survived, survived, killed], complete: true, policy: enforcing(33) })), 0, 'meets threshold in enforce mode');
   assert.equal(reportExitCode(report({ results: [survived, survived, killed], complete: true })), 0, 'advisory mode never gates on the score');
   assert.equal(reportExitCode(report({ results: [killed, killed], complete: true })), 0, '100% score with default threshold');
+});
+
+test('renderHtml states the operating mode, the scope of the evidence, and the enforcement-readiness checklist', () => {
+  const advisory = renderHtml(report({ results: [mutation({ outcome: 'survived' })], totalPlanned: 1, complete: true }));
+  assert.ok(advisory.includes('Advisory run'), 'the report says which mode produced it');
+  assert.ok(advisory.includes('does not affect the exit code'));
+  // A report that is read as broader assurance than it is, is a reporting bug.
+  assert.ok(advisory.includes('does not replace integration, contract, UI, security, or environment testing'));
+  assert.ok(advisory.includes('Before enforcing a score in CI'));
+  assert.ok(advisory.includes('Runtime:') && advisory.includes('Equivalent mutants:'));
+  assert.ok(advisory.includes('Do this:'), 'findings carry an action, not just a label');
+  assert.ok(advisory.includes('Execution safeguards'));
+
+  const enforcing = renderHtml(report({ policy: { mode: 'enforce', threshold: 80 }, complete: true }));
+  assert.ok(enforcing.includes('Enforcing run'));
+  assert.ok(enforcing.includes('threshold of 80%'));
+});
+
+test('renderHtml escapes safeguard and traceability fields, which come from caller-supplied values', () => {
+  const malicious = '<img src=x onerror=alert(1)>';
+  const html = renderHtml(report({
+    traceability: { runId: malicious, workItems: [malicious] },
+    safeguards: {
+      validator: malicious, validationOnly: false, snapshotIsolated: true,
+      orgCheck: { targetOrg: malicious, classification: 'scratch', message: malicious },
+      sourceIntegrity: { verified: true, unchanged: false, filesChecked: 1, changedFiles: [malicious], message: malicious },
+      notes: [malicious],
+    },
+  }));
+  assert.equal(html.includes(malicious), false);
+  assert.ok(html.includes('&lt;img src=x onerror=alert(1)&gt;'));
 });

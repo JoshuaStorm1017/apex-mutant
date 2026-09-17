@@ -21,6 +21,14 @@ that measures test *effectiveness*, not just code coverage. It never deploys any
 for real: every request is validation-only, and refuses to run at all against anything
 the Salesforce CLI doesn't classify as a sandbox or scratch org.
 
+Its default operating mode is advisory: it reports a score, prioritized findings with a
+suggested assertion for each surviving mutant, and a record of the safeguards it
+enforced — and it does not fail anything. Gating on the score requires an explicit
+`--enforce` and an explicit `--threshold`, and every report carries the checklist of
+evidence a team should gather from its own runs first. `docs/REQUIREMENTS.md` maps each
+requirement to the code that implements it and the test that proves it, and lists what
+is still a gap.
+
 ## Why a CLI/npm package, not a managed Salesforce package
 
 A managed package installs Apex classes *into* an org — that's the wrong shape for this
@@ -212,6 +220,14 @@ GitHub issues (see `CONTRIBUTING.md`). There is no other support channel.
 | Native Windows fails fast and clearly for `run` | `test/cli.test.ts` (simulated `process.platform`) | ✅ Verified via platform simulation, not a real Windows machine |
 | Installed npm bin actually executes (symlink-safe) | `scripts/tarball-smoke.mjs`, automated in CI on every push | ✅ Verified with a real install, in CI |
 | Released tarball matches its published checksum | Downloaded the actual `v0.1.0-alpha.2` release asset and re-hashed it (`REVIEW-NOTES.md`) | ✅ Verified for that specific release |
+| Advisory-first exit codes: a score never gates a build unless `--enforce` and `--threshold` are both explicit | `test/report.test.ts`, `test/cli.test.ts` | ✅ Verified offline |
+| Findings name a file, line, surviving change, and a concrete suggested assertion | `test/findings.test.ts`, `test/cli.test.ts` | ✅ Verified offline |
+| Inconclusive mutants are reported separately and never presented as test gaps | `test/findings.test.ts`, `test/report.test.ts` | ✅ Verified offline |
+| The report records the safeguards actually enforced (validator, org classification, snapshot isolation) and fails closed on anything it cannot attest | `test/runner.test.ts`, `test/cli.test.ts` | ✅ Verified offline |
+| Local Apex source is re-read after every run and proven byte-for-byte unchanged | `test/runner.test.ts` (unchanged, changed, and unverifiable cases) | ✅ Verified offline |
+| Exports (CSV/SARIF/Markdown) are well-formed, carry caller-supplied work items, and cannot execute in the tools that open them | `test/exports.test.ts`, `test/cli.test.ts` | ✅ Verified offline |
+| Full-run wall-clock runtime and run-to-run stability on a real codebase | — | ⏳ **Pending an authorized sandbox pilot** (readiness items 1 and 2; see `docs/REQUIREMENTS.md` G2/G3) |
+| Suppression of known-equivalent mutants | — | ❌ **Gap** — heuristic risk labels only today (`docs/REQUIREMENTS.md` G1) |
 | `sf project deploy start --dry-run`'s actual JSON contract against a live org | — | ⏳ **Pending an authorized sandbox pilot** — no Salesforce org has been available during development |
 | The sandbox/scratch classification against a real authenticated org | — | ⏳ **Pending an authorized sandbox pilot** |
 | `run` end-to-end against a real org (baseline gate, mutant sequencing, report accuracy) | — | ⏳ **Pending an authorized sandbox pilot** |

@@ -14,17 +14,53 @@ local subprocess shaped like `sf` (`test/salesforce.test.ts`'s fake-executable p
 No real Windows machine exists either — native-Windows behavior is verified by
 simulating `process.platform` in tests, not by running on Windows.
 
-`npm run check`: typecheck + **73** tests + build, all passing. `npm run demo` yields 5
+`npm run check`: typecheck + **104** tests + build, all passing. `npm run demo` yields 5
 mutants against `examples/basic`. CI runs `npm run check`, `npm run demo`, and a real
 tarball-install-and-run smoke test (`scripts/tarball-smoke.mjs`) on every push.
 
 Key docs: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (module contract),
+[docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) (requirement → code → test traceability,
+plus the open gaps with proposed acceptance tests),
 [docs/COMPARISON.md](docs/COMPARISON.md) (evaluation against
 `scolladon/apex-mutation-testing`), [docs/TECHNICAL-REVIEW.md](docs/TECHNICAL-REVIEW.md)
 (committee-ready brief with an acceptance matrix and a runnable synthetic pilot recipe),
 [REVIEW-NOTES.md](REVIEW-NOTES.md) (per-checkpoint self-validation evidence).
 
-## Milestone just completed: easier to pilot and review externally
+## Milestone just completed: advisory-first product requirements
+
+Implemented in one checkpoint (evidence in `REVIEW-NOTES.md` checkpoint E), from external
+review feedback turned into generic product requirements — no organization's internal
+policy is encoded anywhere in the repo:
+
+- **Advisory-first reporting.** `run` reports in advisory mode by default: the mutation
+  score never changes the exit code. Gating needs `--enforce` *and* an explicit
+  `--threshold`; either alone is rejected rather than silently resolved. Exit code 2
+  keeps its meaning (the run produced no readable result) in both modes. Reports state
+  the mode, the scope of the evidence, and the readiness checklist a team should satisfy
+  before enforcing (`src/policy.ts`). SARIF never emits `error` level.
+- **Test-improvement findings.** Surviving mutants become located, prioritized findings
+  with a concrete suggested assertion per operator class; `invalid`/`timeout`/`error`
+  mutants are reported separately as "unproven" and never read as gaps; failed baselines
+  and short runs become run-quality findings; file hotspots rank where gaps concentrate
+  (`src/findings.ts`).
+- **Execution safeguard evidence.** Every report records which validator ran and whether
+  it was the built-in validation-only path (a caller-supplied `Validator` is recorded as
+  un-attested — never assumed safe), the org classification that was enforced, snapshot
+  isolation, and a post-run byte-for-byte re-read of every project file
+  (`verifySourceIntegrity`). Anything unverifiable reports `verified: false`, never
+  `unchanged: true`.
+- **Portable exports and traceability.** `--export csv,sarif,md` writes tool-agnostic
+  artifacts; `--work-item <id>` (validated up front) stamps caller-supplied identifiers
+  into the report and every export. CSV defuses spreadsheet formula injection
+  (`src/exports.ts`).
+
+Report `schemaVersion` is now **2** (`tool`, `policy`, `traceability`, `safeguards` are
+new top-level fields; `report.json` also carries derived `findings`, `hotspots`, and the
+readiness checklist). `reportExitCode(report)` now reads the policy from the report
+instead of taking a threshold argument — a breaking library API change, acceptable at
+alpha and called out here deliberately.
+
+## Previous milestone: easier to pilot and review externally
 
 Four slices, all done and pushed (full evidence in `REVIEW-NOTES.md`; summarized here):
 
@@ -68,6 +104,15 @@ Nothing was published.
 - Coverage-scoped test selection and mutation grouping are not implemented; both are
   compatible with validation-only in principle but need a live org to build and verify
   (see `docs/COMPARISON.md`).
+- **No equivalent-mutant suppression.** Surviving mutants carry a per-operator
+  `equivalenceRisk` heuristic, but there is no way to record "this mutant is equivalent,
+  here's why" and exclude it, so a genuinely equivalent mutant permanently caps the
+  score and re-appears every run (`docs/REQUIREMENTS.md` G1 — the highest-value offline
+  gap left).
+- **No runtime or stability evidence.** Readiness items 1 and 2 (a full run's wall-clock
+  time, and identical outcomes across repeated runs) are unmeasured; the offline half of
+  the stability test could be written today (`docs/REQUIREMENTS.md` G3), the runtime half
+  needs a live org.
 
 ## Next priorities
 
@@ -75,11 +120,14 @@ Nothing was published.
    `docs/TECHNICAL-REVIEW.md`'s "Synthetic pilot recipe" is ready to run as-is against
    `examples/basic`; update that doc's acceptance matrix and this file with the actual
    result (pass or fail, exact `sf` CLI version) once someone does it.
-2. **Real Windows verification** (or a real WSL run) of `plan`, `doctor`, and the
+2. **Equivalent-mutant suppression** (`docs/REQUIREMENTS.md` G1) and the **offline
+   stability test** (G3) — both are buildable and verifiable today, without an org, and
+   both are readiness items the enforcement checklist explicitly asks for.
+3. **Real Windows verification** (or a real WSL run) of `plan`, `doctor`, and the
    native-Windows early-error path for `run`.
-3. Per `docs/COMPARISON.md`: coverage-scoped test selection and mutation grouping,
+4. Per `docs/COMPARISON.md`: coverage-scoped test selection and mutation grouping,
    once org access exists to build and verify them against.
-4. Consider filing the interruption-safety observation about
+5. Consider filing the interruption-safety observation about
    `scolladon/apex-mutation-testing` (no `SIGINT`/`SIGTERM` handler found around its org
    rollback, via static analysis only) upstream — after confirming it against a live
    interrupted run first, per `docs/COMPARISON.md`'s own caveat.
@@ -87,12 +135,15 @@ Nothing was published.
 ## Delivery ledger
 
 Product outcome: a developer can identify surviving Apex mutants without changing
-source or deploying org metadata.
+source or deploying org metadata, get a concrete suggested assertion for each one, and
+export the result — with their own work-item identifiers — into whatever tracks the
+work. Nothing fails a build unless someone explicitly asked for it to.
 Architecture: Node/TypeScript, parser-aware mutation generation, validation-only
 sequential execution.
 Review/testing history: engine/adapter → root-module + CLI integration tests →
 Codex-found output-path symlink fix + doc corrections → Codex-found runner
 API-boundary fixes → doctor/org-gate/Windows-guard → CI-automated tarball smoke test +
-versioned GitHub prerelease → technical-review brief (this checkpoint). 73 tests total,
+versioned GitHub prerelease → technical-review brief → advisory-first reporting,
+findings, safeguard evidence, and portable exports (this checkpoint). 104 tests total,
 all offline/injected or platform-simulated — no Salesforce CLI, org, or Windows machine
 has ever been used in this repository's verification.

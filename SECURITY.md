@@ -8,7 +8,8 @@ Apex Mutant is a local CLI. It:
 - Never edits your Apex source under your package directories — mutations are only
   ever applied to a throwaway temporary copy that is deleted when the run ends. This is
   **not** the same claim as "writes nothing into your project": `plan`/`run` do
-  intentionally write output artifacts (`plan.json`, `report.json`, `report.html`) into
+  intentionally write output artifacts (`plan.json`, `report.json`, `report.html`, and
+  any requested exports — `findings.csv`, `report.sarif`, `summary.md`) into
   `--output`, which defaults to `.apex-mutant/` inside your project (see README's "How
   it works" and "Apex-only snapshots"). Those writes are atomic — a fresh temp file
   followed by a rename that replaces rather than follows a pre-existing symlink at the
@@ -21,9 +22,15 @@ Apex Mutant is a local CLI. It:
   guard"). Every actual validation is `sf project deploy start --dry-run`. It never
   deploys for real, never applies a quick-deploy fallback, and never holds or transmits
   credentials itself (it relies entirely on your already-authenticated Salesforce CLI).
-- Writes reports (`report.json`, `report.html`) that can contain your source snippets.
+- Writes reports (`report.json`, `report.html`) and, when asked, exports
+  (`findings.csv`, `report.sarif`, `summary.md`) that can contain your source snippets.
   These are written locally, with `0o600` permissions where the platform honors them,
-  and are never uploaded anywhere by this tool.
+  and are never uploaded anywhere by this tool — including work-item identifiers passed
+  with `--work-item`, which are recorded in those files and sent nowhere.
+- CSV cells beginning with `=`, `+`, `-`, or `@` are prefixed with `'` so a spreadsheet
+  cannot evaluate a source snippet as a formula, and SARIF findings are never emitted at
+  `error` level (only `note`, or `warning` under an explicit `--enforce`), so ingesting
+  an export cannot by itself fail someone's pipeline.
 
 ## Reporting a vulnerability
 
@@ -52,7 +59,8 @@ These are documented tradeoffs, not vulnerabilities to report:
   deployed for real — but a mutant's test failure output could theoretically surface
   something sensitive your own tests print. Reports never include raw Salesforce CLI
   output or org identifiers, only structured outcome classifications, but treat
-  `report.html`/`report.json` as private in the same way you'd treat your own source.
+  `report.html`/`report.json` and any exports as private in the same way you'd treat
+  your own source.
 - `.forceignore` is intentionally not applied when building the isolated snapshot used
   for validation (see README's "Apex-only snapshots" section) — this is a deliberate
   design choice for a validation-only tool, not an oversight.
