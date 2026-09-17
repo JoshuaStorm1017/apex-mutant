@@ -3,7 +3,63 @@
 Concise, evidence-based log per checkpoint for Codex's medium-depth review. No
 Salesforce CLI or org is available or used anywhere in this log.
 
-## Checkpoint A — runner API-boundary fixes (this push)
+## Checkpoint B — doctor command, sandbox/scratch org gate, native-Windows guard
+
+Milestone: make the tool easier to pilot/review externally (owner-requested, 4 slices).
+
+**`apex-mutant doctor`** (`runDoctor` in `src/cli.ts`): offline by default — Node/
+platform, project validity (caught, reported, never thrown), planned mutation count vs.
+total Apex files always in the snapshot (explicit note that filters narrow what's
+tested, not what leaves the machine), `sf` CLI presence/version. `--target-org` adds one
+read-only classification check. `--json` for machine-readable output. Exit `1` iff a
+real `plan`/`run` problem was found.
+
+**Sandbox/scratch org gate** (`src/orgSafety.ts`, new): `classifyTargetOrg` runs
+`sf org list auth --json` (read-only, no target-org flag on that command — lists all
+authenticated orgs, matched by alias/username) and classifies via `isSandbox`/
+`isScratchOrg`, the fields the Salesforce CLI itself computes and caches. Verified by
+reading pinned upstream source, not assumed:
+- [`@salesforce/core` `authInfo.ts` lines 303–316](https://github.com/forcedotcom/sfdx-core/blob/53d5fd01877cde3b3c0942e4e8de3d272f828b6e/src/org/authInfo.ts#L303-L316) — where `isSandbox`/`isScratchOrg`/`isDevHub` are computed onto `OrgAuthorization`.
+- [`plugin-auth`'s `org list auth` command](https://github.com/salesforcecli/plugin-auth/blob/6e37e793c3b2c6b61950f2832ed76c9e9e285e6f/src/commands/org/list/auth.ts) — confirms this is the command that surfaces `OrgAuthorization[]` as JSON.
+- [`plugin-org`'s `org display` command](https://github.com/salesforcecli/plugin-org/blob/5261d6169db7f7eef81dc3e9b30c13ad4aa9677e/src/commands/org/display.ts) — confirmed by reading it that `sf org display --json` does **not** carry an `isSandbox` field; deliberately not used for classification.
+- [forcedotcom/cli #3560](https://github.com/forcedotcom/cli/issues/3560) — confirms `accessToken` is redacted from these commands' JSON output by default since 2026-05-27 (already in effect). This code never sets `SF_TEMP_SHOW_SECRETS` and never prints raw stdout regardless.
+
+`assertSandboxOrScratch` is wired into `cli.ts`'s `run` before `runMutations` is ever
+called (verified: a fake classifier returning `production`/`unknown` results in 0
+validator calls). No override flag. Fails closed to `'unknown'` on any subprocess
+failure, timeout, missing-org, auth-error, or malformed-evidence case.
+
+**Not verified against a real org, real `sf` CLI, or real Windows machine** — this
+project has none of the three. All classification tests use a fake `sf` executable on
+`PATH` (`test/orgSafety.test.ts`, mirroring `test/salesforce.test.ts`'s existing
+pattern); the native-Windows tests use a `withPlatform` helper that temporarily
+overrides `process.platform` via `Object.defineProperty` (`test/cli.test.ts`). Labeling
+this explicitly rather than implying real-environment coverage.
+
+**Windows**: `run` now throws immediately and clearly when `process.platform ===
+'win32'`, before doing anything else, instead of attempting and possibly failing
+unpredictably. `plan` and `doctor` are unaffected (verified under simulated `win32`:
+`plan` still succeeds, `doctor` reports the sf-check as skipped with a clear reason
+rather than a false negative).
+
+```
+npm run check   # typecheck clean, 73/73 tests pass (was 60), build clean
+npm run demo    # unchanged
+npx tsx src/cli.ts doctor --project examples/basic   # manually smoke-tested, real output above in this session
+```
+
+**Judgment calls:**
+- `checkSalesforceCli`/`classifyTargetOrg` are not independently injectable into
+  `main()` the way `validate`/`classifyOrg` are — `doctor`'s own tests work around this
+  by not asserting on `sf`-CLI-presence-dependent fields rather than adding a fourth DI
+  parameter. If `doctor` grows more sf-CLI-dependent checks, revisit this.
+- The org classification is the CLI's *locally cached* auth-file metadata (populated at
+  `sf org login` time), not a live API query — this is what the CLI's own other plugins
+  rely on for the same purpose (see citations above), and keeps the check cheap and
+  read-only, but means a very recently re-classified org (rare) could show stale data
+  until re-authenticated.
+
+## Checkpoint A — runner API-boundary fixes
 
 Responds to a Codex review that found two reproduced gaps in `runMutations` (the
 public library function, separate from the CLI) plus two smaller hardening items.

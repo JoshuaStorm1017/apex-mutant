@@ -36,3 +36,12 @@ export interface Report {
   totalPlanned: number;
   complete: boolean;
 }
+
+/** 'unknown' covers every failure-closed case: no match, ambiguous evidence, a
+ * subprocess/parse failure, or a timeout. It is never treated as safe to run against. */
+export type OrgClassification = 'sandbox' | 'scratch' | 'production' | 'unknown';
+export interface OrgClassificationResult {
+  classification: OrgClassification;
+  message: string;
+}
+export type OrgClassifier = (targetOrg: string) => Promise<OrgClassificationResult>;

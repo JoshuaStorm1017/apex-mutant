@@ -90,10 +90,43 @@ node dist/cli.js run --target-org my-scratch-org --tests DiscountServiceTest \
 - Your baseline (unmutated code) must actually pass the given tests. If it doesn't,
   `run` reports the baseline failure and stops before spending anything on mutants.
 
+### The sandbox/scratch guard
+
+Before sending any mutant source to `--target-org`, `run` calls `sf org list auth
+--json` (read-only — it only lists already-authenticated orgs, it never queries or
+changes one) and checks that org's `isSandbox`/`isScratchOrg` fields, which the
+Salesforce CLI itself computes and caches at auth time. If the org isn't classified as a
+sandbox or a scratch org — including if it can't be classified at all (not found, an
+auth error, missing/malformed evidence, a timeout) — `run` refuses to start. **There is
+no override flag.** This is enforced in code, not just a warning in this README.
+
+This has been verified with injected fake `sf` responses covering production, sandbox,
+scratch, missing-org, and malformed-evidence cases (`test/orgSafety.test.ts`) — it has
+**not** been verified against a real org, since none is available in this project's
+development environment. If you hit a false "unknown" classification against a real org
+you believe is a sandbox or scratch org, please open an issue with the (redacted, if
+needed) `sf org list auth --json` output for that org.
+
+## Quickstart: doctor (fully offline by default)
+
+```sh
+node dist/cli.js doctor --project examples/basic
+```
+
+Diagnoses your environment before you spend anything on `run`: Node version and
+platform, whether the project is valid, how many mutations your current filters would
+target vs. how many Apex files the snapshot actually includes (see "Apex-only
+snapshots" below — filtering narrows what's *tested*, not what leaves your machine),
+and whether the Salesforce CLI is on `PATH`. Add `--target-org <alias>` for one extra,
+read-only check: the same sandbox/scratch classification `run` enforces, reported here
+without blocking anything. Add `--json` for machine-readable output. Exits `1` if it
+found something `plan`/`run` would actually reject; `0` otherwise.
+
 ## CLI reference
 
 ```
 apex-mutant plan [options]
+apex-mutant doctor [options]
 apex-mutant run --target-org <alias> --tests <TestClass> [options]
 ```
 
@@ -191,14 +224,18 @@ tool never deploys them for you, by design.
   fixture. The actual `sf project deploy start --dry-run` contract against a real org
   has not been exercised. Treat `run` as unverified against a real org until someone
   does that with an actual disposable org and updates `HANDOFF.md`.
-- **Windows is untested and the `run` command may not work there.** `validateWithSalesforce`
+- **Native Windows is explicitly unsupported for `run`, on purpose.** `validateWithSalesforce`
   spawns `sf` with `shell: false` (deliberately, to avoid shell-injection risk from
-  target-org/test names). On Windows, a CLI installed via npm is typically a `.cmd`
-  shim, and Node's `child_process.spawn` has known problems invoking `.cmd`/`.bat`
-  files without `shell: true`. `plan` (pure parsing, no subprocess) should work
-  fine on Windows; `run` might not. Filesystem symlink handling in project discovery is
-  also untested on Windows and its tests are skipped there. If you verify `run` on
-  Windows (or find it broken), please open an issue with what you found.
+  target-org/test names); on Windows an npm-installed CLI is typically a `.cmd` shim,
+  and Node's `child_process.spawn` has known problems invoking `.cmd`/`.bat` files
+  without `shell: true`. Rather than attempt that unreliably, `run` fails immediately
+  with a clear error on native Windows (`process.platform === 'win32'`) pointing at
+  WSL, macOS, or Linux instead. `plan` and `doctor` (pure parsing/diagnostics, no
+  subprocess needed for their offline checks) still work natively on Windows — verified
+  by simulating `process.platform` in tests, not by running on real Windows, since none
+  is available here. Filesystem symlink handling in project discovery is also untested
+  on real Windows and its tests are skipped there. If you run this from WSL and hit an
+  issue, please open one with what you found.
 - **Sequential only, no grouping, no coverage-based test selection.** Every mutant is
   validated one at a time against the full `--tests` list you gave, regardless of
   which lines those tests actually cover. See

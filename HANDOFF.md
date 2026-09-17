@@ -9,7 +9,7 @@ acceptance is still NOT verified**, and every claim below that could plausibly n
 real org is instead verified with an injected fake `Validator` or a real local
 subprocess shaped like `sf` (`test/salesforce.test.ts`'s fake-executable pattern).
 
-`npm run check`: typecheck + **60** tests + build, all passing. `npm run demo` yields 5
+`npm run check`: typecheck + **73** tests + build, all passing. `npm run demo` yields 5
 mutants against `examples/basic`, unchanged. Engine has 8 mutation operators (see
 README's operator table). See `docs/COMPARISON.md` for the evaluation against
 `scolladon/apex-mutation-testing` and `REVIEW-NOTES.md` for exact self-validation
@@ -46,12 +46,28 @@ pushed separately):
     covering direct/nested-nonexistent/symlinked-ancestor/safe output paths, the exact
     reported `testsRun: 0` scenario, undefined/NaN/negative/non-integer `testsRun`,
     unknown/missing outcome, `null`/`undefined` results, and the temp-file-cleanup path.
-- **B — next.** `apex-mutant doctor` command (offline by default: Node/platform, project
-  validity, `sf` CLI presence/version, planned scope; optional `--target-org` read-only
-  checks). A genuine pre-`run` guard that rejects a non-sandbox/scratch org classification
-  (no silent fallback). Windows: either a real native launcher or an explicit early error
-  pointing at WSL/macOS/Linux.
-- **C — after B.** CI-automated tarball install/bin smoke test (so the checkpoint-4
+- **B — done, this push.** `apex-mutant doctor` command (`src/cli.ts`'s `runDoctor`):
+  fully offline by default — Node/platform, project validity (caught and reported, not
+  thrown), planned mutation count vs. total Apex files in the snapshot (with an explicit
+  note that `--include`/`--exclude` only narrow what's *tested*, not what leaves the
+  machine), and `sf` CLI presence/version. `--target-org` adds one read-only check.
+  New `src/orgSafety.ts`: `classifyTargetOrg` runs `sf org list auth --json` (read-only)
+  and classifies via the CLI's own cached `isSandbox`/`isScratchOrg` fields — the actual
+  fields other official `sf` plugins use for this, pinned source citations in the file's
+  doc comment (`sf org display` does **not** carry this field; deliberately not used).
+  `assertSandboxOrScratch` is the genuine guard: wired into `cli.ts`'s `run` before
+  `runMutations` is ever called, no override flag. Fails closed to `'unknown'` on any
+  subprocess failure, timeout, missing org, auth error, or malformed evidence.
+  Windows: `run` now fails immediately and clearly on `process.platform === 'win32'`
+  (Node can't safely spawn the `sf.cmd` shim with `shell:false`) rather than attempting
+  and failing unpredictably; `plan` and `doctor` are unaffected (no subprocess needed for
+  their offline checks). 27 new tests (`test/orgSafety.test.ts` — fake-`sf`-on-PATH
+  classification incl. production/sandbox/scratch/missing/malformed/auth-error; `doctor`
+  and org-gate/native-Windows integration tests in `test/cli.test.ts`, the latter via a
+  `withPlatform` test helper that overrides `process.platform`, since no Windows runner
+  exists here either). **None of this has been exercised against a real Salesforce CLI,
+  org, or Windows machine** — every claim is fake-subprocess or simulated-platform only.
+- **C — next.** CI-automated tarball install/bin smoke test (so the checkpoint-4
   symlink-guard class of bug is caught automatically, not only by a manual repro).
   Release artifact (`.tgz` + SHA256 + dependency/license inventory) attached to a GitHub
   prerelease at `0.1.0-alpha.2`. No `npm publish`.
@@ -65,7 +81,10 @@ pushed separately):
 
 - No live Salesforce org or CLI has ever been used to verify anything in this
   repository. Every "verified" claim is injected-validator or fake-subprocess-based.
-- Windows support for `run` is undetermined (see README; being addressed in slice B).
+- The sandbox/scratch org gate (`orgSafety.ts`) and the native-Windows early error are
+  both untested against the real thing (real `sf`, real org, real Windows). If a real
+  org's `sf org list auth --json` output ever differs from what's assumed, `run` fails
+  closed to `'unknown'` (refuses), never open.
 - Coverage-scoped test selection and mutation grouping are not implemented; both are
   compatible with validation-only in principle but need a live org to build and verify
   (see `docs/COMPARISON.md`).
@@ -78,6 +97,8 @@ Architecture: Node/TypeScript, parser-aware mutation generation, validation-only
 sequential execution.
 Review/testing history: engine/adapter (checkpoint 2) → root-module + CLI integration
 tests (checkpoint 3) → Codex-found output-path symlink fix + doc corrections
-(checkpoint 4) → Codex-found runner API-boundary fixes, in progress toward an
-external-pilot-ready milestone (this checkpoint). 60 tests total, all offline/injected —
-no Salesforce CLI or org has ever been used in this repository's verification.
+(checkpoint 4) → Codex-found runner API-boundary fixes (slice A) → doctor command +
+sandbox/scratch org gate + native-Windows guard (slice B, this checkpoint), in progress
+toward an external-pilot-ready milestone. 73 tests total, all offline/injected or
+platform-simulated — no Salesforce CLI, org, or Windows machine has ever been used in
+this repository's verification.

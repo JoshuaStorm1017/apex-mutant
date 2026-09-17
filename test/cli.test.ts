@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { main } from '../src/cli.js';
-import type { ExecutionResult, Validator } from '../src/types.js';
+import type { ExecutionResult, OrgClassificationResult, OrgClassifier, Validator } from '../src/types.js';
+
+const scratchClassifier: OrgClassifier = async () => ({ classification: 'scratch', message: 'test fixture' });
 
 async function fixtureProject(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), 'apex-mutant-cli-'));
@@ -45,8 +47,8 @@ test('no arguments or --help prints usage without throwing', async () => {
 });
 
 test('an unknown or extra positional command is rejected', async () => {
-  await assert.rejects(main(['bogus']), /Expected plan or run/);
-  await assert.rejects(main(['plan', 'run']), /Expected plan or run/);
+  await assert.rejects(main(['bogus']), /Expected plan, doctor, or run/);
+  await assert.rejects(main(['plan', 'run']), /Expected plan, doctor, or run/);
 });
 
 test('plan runs fully offline, writes plan.json, and lists every mutation', async () => {
@@ -160,7 +162,7 @@ test('run with an injected validator never touches a real Salesforce CLI and rep
     let call = 0;
     const results: ExecutionResult[] = [{ outcome: 'survived', testsRun: 2 }, { outcome: 'killed', testsRun: 2 }, { outcome: 'survived', testsRun: 2 }];
     const validator: Validator = async () => results[call++];
-    const { logs, exitCode } = await capture(() => main(['run', '--project', root, '--target-org', 'scratch', '--tests', 'FooTest', '--output', output], validator));
+    const { logs, exitCode } = await capture(() => main(['run', '--project', root, '--target-org', 'scratch', '--tests', 'FooTest', '--output', output], validator, scratchClassifier));
     assert.equal(call, 3, 'baseline plus both mutants');
     assert.ok(logs.some((l) => l.includes('Baseline: survived')));
     assert.ok(logs.some((l) => l.includes('Mutation score: 50.0%')));
@@ -177,12 +179,12 @@ test('run below the requested threshold exits 1 and above it exits 0', async () 
   const root = await fixtureProject();
   try {
     const survivedOnly: Validator = async () => ({ outcome: 'survived', testsRun: 1 });
-    const below = await capture(() => main(['run', '--project', root, '--target-org', 'scratch', '--tests', 'FooTest', '--output', join(root, 'out1'), '--threshold', '10'], survivedOnly));
+    const below = await capture(() => main(['run', '--project', root, '--target-org', 'scratch', '--tests', 'FooTest', '--output', join(root, 'out1'), '--threshold', '10'], survivedOnly, scratchClassifier));
     assert.equal(below.exitCode, 1);
 
     let call = 0;
     const allKilled: Validator = async () => (call++ === 0 ? { outcome: 'survived', testsRun: 1 } : { outcome: 'killed', testsRun: 1 });
-    const above = await capture(() => main(['run', '--project', root, '--target-org', 'scratch', '--tests', 'FooTest', '--output', join(root, 'out2'), '--threshold', '10'], allKilled));
+    const above = await capture(() => main(['run', '--project', root, '--target-org', 'scratch', '--tests', 'FooTest', '--output', join(root, 'out2'), '--threshold', '10'], allKilled, scratchClassifier));
     assert.equal(above.exitCode, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -197,7 +199,7 @@ test('run fails closed with exit code 2 when the Salesforce CLI is not installed
   const emptyPathDir = await mkdtemp(join(tmpdir(), 'apex-mutant-empty-path-'));
   process.env.PATH = emptyPathDir;
   try {
-    const { exitCode } = await capture(() => main(['run', '--project', root, '--target-org', 'scratch', '--tests', 'FooTest', '--output', output]));
+    const { exitCode } = await capture(() => main(['run', '--project', root, '--target-org', 'scratch', '--tests', 'FooTest', '--output', output], undefined, scratchClassifier));
     assert.equal(exitCode, 2);
     const report = JSON.parse(await readFile(join(output, 'report.json'), 'utf8'));
     assert.equal(report.baseline.outcome, 'error');
@@ -205,6 +207,117 @@ test('run fails closed with exit code 2 when the Salesforce CLI is not installed
   } finally {
     if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath;
     await rm(emptyPathDir, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('run refuses a production or unknown-classified target org before the validator is ever invoked, with no override', async () => {
+  const root = await fixtureProject();
+  try {
+    const badClassifications: OrgClassificationResult[] = [
+      { classification: 'production', message: 'is prod' },
+      { classification: 'unknown', message: 'no evidence' },
+    ];
+    for (const bad of badClassifications) {
+      let calls = 0;
+      const validator: Validator = async () => { calls++; return { outcome: 'survived', testsRun: 1 }; };
+      const classifier: OrgClassifier = async () => bad;
+      await assert.rejects(
+        main(['run', '--project', root, '--target-org', 'x', '--tests', 'FooTest', '--output', join(root, 'out')], validator, classifier),
+        /Refusing to run/,
+      );
+      assert.equal(calls, 0, `validator must not run for classification '${bad.classification}'`);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+async function withPlatform<T>(platform: NodeJS.Platform, fn: () => Promise<T> | T): Promise<T> {
+  const original = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+  try { return await fn(); } finally { Object.defineProperty(process, 'platform', original); }
+}
+
+test('run gives an early, clear error on native Windows; plan and doctor still work there', async () => {
+  const root = await fixtureProject();
+  try {
+    await withPlatform('win32', async () => {
+      await assert.rejects(
+        main(['run', '--project', root, '--target-org', 'x', '--tests', 'T'], async () => ({ outcome: 'survived', testsRun: 1 }), scratchClassifier),
+        /not supported on native Windows/,
+      );
+      const plan = await capture(() => main(['plan', '--project', root, '--output', join(root, 'out')]));
+      assert.equal(plan.exitCode, undefined, 'plan is pure parsing and must still work on native Windows');
+      const doctor = await capture(() => main(['doctor', '--project', root, '--json']));
+      const report = JSON.parse(doctor.logs.join('\n'));
+      assert.equal(report.salesforceCli.available, false);
+      assert.match(report.salesforceCli.detail, /native Windows/);
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('doctor reports valid project diagnostics offline, with the include/exclude-vs-snapshot clarification', async () => {
+  // Deliberately does not assert report.healthy/exitCode: on a machine without a real
+  // `sf` CLI installed, doctor correctly (and separately) flags that as a problem —
+  // this test is only about the project/plan diagnostics, which are fully offline.
+  const root = await fixtureProject();
+  try {
+    const { logs } = await capture(() => main(['doctor', '--project', root, '--json']));
+    const report = JSON.parse(logs.join('\n'));
+    assert.equal(report.project.error, undefined);
+    assert.equal(report.project.mutationsPlanned, 2);
+    assert.equal(report.project.totalApexFilesInSnapshot, 1);
+    assert.match(report.project.note, /always contains all/);
+    assert.equal(typeof report.salesforceCli.available, 'boolean');
+    assert.equal(typeof report.salesforceCli.detail, 'string');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('doctor reports an invalid project as a diagnosis, not a thrown error, and exits 1', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'apex-mutant-cli-'));
+  try {
+    // No sfdx-project.json: readProject() will reject.
+    const { logs, exitCode } = await capture(() => main(['doctor', '--project', root, '--json']));
+    const report = JSON.parse(logs.join('\n'));
+    assert.equal(report.healthy, false);
+    assert.ok(report.project.error);
+    assert.equal(exitCode, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('doctor reports a filtered plan\'s narrower scope distinctly from the full snapshot', async () => {
+  const root = await fixtureProject();
+  const classes = join(root, 'force-app', 'main', 'default', 'classes');
+  await writeFile(join(classes, 'Bar.cls'), 'public class Bar { void m() { Boolean b = false; } }');
+  await writeFile(join(classes, 'Bar.cls-meta.xml'), '<ApexClass/>');
+  try {
+    const { logs } = await capture(() => main(['doctor', '--project', root, '--include', 'force-app/main/default/classes/Foo.cls', '--json']));
+    const report = JSON.parse(logs.join('\n'));
+    assert.equal(report.project.targetedFiles, 1);
+    assert.equal(report.project.totalApexFilesInSnapshot, 2, 'the snapshot always includes every Apex file, not just the targeted one');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('doctor with --target-org reports the classification and flags a non-sandbox/scratch org as a problem, without throwing', async () => {
+  const root = await fixtureProject();
+  try {
+    const prod: OrgClassifier = async () => ({ classification: 'production', message: 'is prod' });
+    const { logs, exitCode } = await capture(() => main(['doctor', '--project', root, '--target-org', 'x', '--json'], undefined, prod));
+    const report = JSON.parse(logs.join('\n'));
+    assert.equal(report.targetOrg.classification, 'production');
+    assert.equal(report.healthy, false);
+    assert.equal(exitCode, 1);
+    assert.ok(report.problems.some((p: string) => p.includes('run would refuse')));
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
