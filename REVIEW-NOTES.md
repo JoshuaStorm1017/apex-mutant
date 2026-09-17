@@ -3,6 +3,61 @@
 Concise, evidence-based log per checkpoint for Codex's medium-depth review. No
 Salesforce CLI or org is available or used anywhere in this log.
 
+## Checkpoint C — CI-automated tarball smoke test, release script, GitHub prerelease
+
+**`scripts/tarball-smoke.mjs`**: packs a real tarball (not `--dry-run`), installs it
+into an isolated temp directory with an explicit minimal `package.json` (not `npm
+init --prefix`, which mis-wrote this repo's own `package.json` once before — see the
+"one mistake" note further down this file), and runs the *installed*
+`node_modules/.bin/apex-mutant` symlink for both `--help` and `plan`. This is the exact
+manual repro that caught the checkpoint-4 npm-bin symlink-guard regression, now
+automated. Verified it actually catches that regression class: temporarily restored the
+pre-checkpoint-4 broken `isDirectlyExecuted` guard in `src/cli.ts`, ran the script, got
+`tarball-smoke: FAILED — installed bin printed no usage text. Got: ""`, then reverted
+(confirmed `git diff src/cli.ts` was empty afterward — nothing committed with the
+regression in it). Now a step in `.github/workflows/ci.yml`, running on every push/PR
+alongside `npm run check`.
+
+**`scripts/release.mjs`**: builds the real tarball, lists its actual contents via
+`tar -tzf` and fails loudly if anything falls outside `dist/**`/`README.md`/`LICENSE`/
+`package.json`, computes its SHA256, generates a CycloneDX SBOM via npm's built-in
+`npm sbom --sbom-format cyclonedx --omit dev` (patched post-generation to use
+`package.json`'s actual name — `npm sbom` picked up this working directory's basename,
+`apex-mutant-claude-work`, for the root component's display name instead, in this
+worktree environment), and derives a plain-text `LICENSES.txt` from the SBOM's own
+license data. Local run's exact output:
+
+```
+tarball: apex-mutant-0.1.0-alpha.2.tgz (packed via npm pack --json)
+payload inspected: 30 entries, all match dist/**, README.md, LICENSE, package.json
+sha256: <computed, independently re-verified with `shasum -a 256` — matched exactly>
+license inventory:
+  @apexdevtools/apex-parser@5.2.0  BSD-3-Clause
+  antlr4@4.13.2  BSD-3-Clause               (transitive dependency)
+  apex-mutant@0.1.0-alpha.2  MIT
+```
+
+**Version**: bumped `0.1.0-alpha.1` → `0.1.0-alpha.2` via `npm version --no-git-tag-version`
+(no git tag from that command itself — the release step below creates the tag). Both
+`package.json` and `package-lock.json` confirmed consistent
+(`grep '"version"' package-lock.json` shows `0.1.0-alpha.2` in both the root and
+`packages.""` entries).
+
+**New `.github/workflows/release.yml`** (`workflow_dispatch`, `contents: write`): runs
+`npm run check` + `scripts/tarball-smoke.mjs` + a version-match check + `scripts/
+release.mjs`, uploads `release/` as a workflow artifact, then `gh release create
+--prerelease` attaching the tarball/checksum/SBOM/license files. Reproducible: anyone
+with write access can re-run it for a future version without touching this session.
+
+**Actual release performed this checkpoint** (not just the workflow file — the real
+thing, since the task asked for "GitHub prerelease... once checks pass," not only the
+automation): see the addendum below this section for the exact release URL, the
+uploaded asset's SHA256 **re-verified by downloading the asset back from GitHub and
+re-hashing it**, distinct from the local `npm pack --dry-run` listings earlier
+checkpoints relied on for payload inspection only.
+
+No `npm publish`, no registry account touched, no auth/security settings changed.
+
 ## Checkpoint B — doctor command, sandbox/scratch org gate, native-Windows guard
 
 Milestone: make the tool easier to pilot/review externally (owner-requested, 4 slices).

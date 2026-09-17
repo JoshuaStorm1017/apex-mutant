@@ -39,21 +39,31 @@ described in `HANDOFF.md`; the guarantee here is "this specific defense exists,"
 
 ## Install
 
-Not published to npm yet. Clone and build from source:
+**Not published to the npm registry.** There are two supported ways to get it:
+
+**From a GitHub release** (recommended for trying it out): download the `.tgz` from the
+[Releases page](https://github.com/JoshuaStorm1017/apex-mutant/releases) — every release
+also carries a `SHA256SUMS` file, a CycloneDX `sbom.cyclonedx.json`, and a plain-text
+`LICENSES.txt` for its exact contents — then:
+
+```sh
+sha256sum -c SHA256SUMS   # verify the tarball you downloaded matches the release
+npm install -g ./apex-mutant-<version>.tgz   # or without -g, into any project
+apex-mutant --help
+```
+
+**From source** (for development or to build a version not yet released):
 
 ```sh
 git clone https://github.com/JoshuaStorm1017/apex-mutant.git
 cd apex-mutant
 npm ci
 npm run build
-```
-
-Requires Node 22.13+ or 24+ (see `engines` in `package.json`). Run the CLI from the
-built output, or via `npx tsx src/cli.ts ...` during development:
-
-```sh
 node dist/cli.js --help
 ```
+
+Requires Node 22.13+ or 24+ (see `engines` in `package.json`). `npx tsx src/cli.ts ...`
+also works directly against source during development, without a build step.
 
 ## Quickstart: plan (fully offline, no Salesforce CLI required)
 
@@ -244,17 +254,23 @@ tool never deploys them for you, by design.
   queries this environment couldn't verify).
 - **8 mutation operators**, not a large or configurable set. See the operator table
   above for exactly what's covered.
-- Not published to npm. Install from source only (see "Install" above).
+- Not published to the npm registry. Install from a GitHub release tarball or from
+  source (see "Install" above).
 
 ## Development
 
 ```sh
 npm ci
-npm run check     # typecheck + unit/integration tests + build
-npm run demo      # offline plan against examples/basic
+npm run check             # typecheck + unit/integration tests + build
+npm run demo              # offline plan against examples/basic
+node scripts/tarball-smoke.mjs   # real npm pack + install + installed-bin smoke test
+npm run release:prepare   # builds release/: tarball, SHA256SUMS, SBOM, license inventory
 ```
 
 `npm run check` is the release gate — it must pass before any change is pushed.
+CI runs both `npm run check` and `scripts/tarball-smoke.mjs` on every push; the release
+workflow (`.github/workflows/release.yml`, manually triggered) runs
+`scripts/release.mjs` and attaches its output to a GitHub prerelease.
 See [AGENTS.md](AGENTS.md) for the full contributor/agent contract,
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for module boundaries and the acceptance
 contract, [CONTRIBUTING.md](CONTRIBUTING.md) for how to propose a change, and

@@ -1,0 +1,43 @@
+name: Release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, without a leading v (e.g. 0.1.0-alpha.2). Must match package.json.'
+        required: true
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: node scripts/tarball-smoke.mjs
+      - name: Verify package.json version matches the requested release version
+        run: |
+          actual=$(node -p "require('./package.json').version")
+          if [ "$actual" != "${{ inputs.version }}" ]; then
+            echo "package.json version ($actual) does not match requested release version (${{ inputs.version }})" >&2
+            exit 1
+          fi
+      - run: node scripts/release.mjs
+      - name: Upload release artifacts as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ inputs.version }}
+          path: release/
+      - name: Create GitHub prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ inputs.version }}" \
+            --prerelease \
+            --title "v${{ inputs.version }}" \
+            --notes "Alpha prerelease, not published to the npm registry. Install from this release's .tgz asset, or clone and build from source. See HANDOFF.md and REVIEW-NOTES.md for current verified state and limitations." \
+            release/*.tgz release/SHA256SUMS release/sbom.cyclonedx.json release/LICENSES.txt

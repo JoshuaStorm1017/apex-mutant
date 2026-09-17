@@ -4,6 +4,7 @@ coverage/
 .apex-mutant/
 mutation-report*
 *.tgz
+/release/
 .env
 .env.*
 .sf/

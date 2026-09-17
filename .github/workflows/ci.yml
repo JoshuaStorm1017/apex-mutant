@@ -20,3 +20,5 @@ jobs:
       - run: npm run check
       - run: npm run demo
       - run: npm pack --dry-run
+      - name: Real tarball install + installed-bin smoke test
+        run: node scripts/tarball-smoke.mjs

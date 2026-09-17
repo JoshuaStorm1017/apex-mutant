@@ -67,10 +67,24 @@ pushed separately):
   `withPlatform` test helper that overrides `process.platform`, since no Windows runner
   exists here either). **None of this has been exercised against a real Salesforce CLI,
   org, or Windows machine** — every claim is fake-subprocess or simulated-platform only.
-- **C — next.** CI-automated tarball install/bin smoke test (so the checkpoint-4
-  symlink-guard class of bug is caught automatically, not only by a manual repro).
-  Release artifact (`.tgz` + SHA256 + dependency/license inventory) attached to a GitHub
-  prerelease at `0.1.0-alpha.2`. No `npm publish`.
+- **C — done, this push.** `scripts/tarball-smoke.mjs`: packs a real tarball, installs
+  it into an isolated directory the way a user would, and runs the *installed*
+  `node_modules/.bin` symlink (not `tsx src/cli.ts`, which can't see that class of bug).
+  Verified it actually catches the checkpoint-4 regression class by temporarily
+  reintroducing the broken `isDirectlyExecuted` guard, confirming the script fails with
+  "installed bin printed no usage text," then reverting (no net diff). Now wired into
+  `.github/workflows/ci.yml` on every push/PR. `scripts/release.mjs`: builds the real
+  tarball, inspects its actual payload against an allowlist (fails loudly on anything
+  outside `dist/**`/`README.md`/`LICENSE`/`package.json`), computes SHA256, generates a
+  CycloneDX SBOM via npm's built-in `npm sbom` (patched to use the correct package name —
+  it picked up the working-directory basename instead in this environment), and derives
+  a plain-text `LICENSES.txt` from it. New `.github/workflows/release.yml`
+  (`workflow_dispatch`) runs the same script and attaches its output to a GitHub
+  prerelease. Version bumped to `0.1.0-alpha.2` (`package.json` + `package-lock.json`,
+  via `npm version --no-git-tag-version`, both consistent). See `REVIEW-NOTES.md` for
+  the actual release evidence (checksums, and confirmation the uploaded release asset's
+  hash matches what was built locally — not just a `--dry-run` listing). No `npm publish`,
+  no registry account changes.
 - **D — last.** `docs/TECHNICAL-REVIEW.md`: a generic, committee-ready brief (not tied to
   any named employer/company) covering architecture/data flow, permissions, dependencies,
   install/uninstall, platform support, and an acceptance matrix distinguishing what's
@@ -98,7 +112,8 @@ sequential execution.
 Review/testing history: engine/adapter (checkpoint 2) → root-module + CLI integration
 tests (checkpoint 3) → Codex-found output-path symlink fix + doc corrections
 (checkpoint 4) → Codex-found runner API-boundary fixes (slice A) → doctor command +
-sandbox/scratch org gate + native-Windows guard (slice B, this checkpoint), in progress
-toward an external-pilot-ready milestone. 73 tests total, all offline/injected or
+sandbox/scratch org gate + native-Windows guard (slice B) → CI-automated tarball smoke
+test + versioned GitHub prerelease (slice C, this checkpoint), in progress toward an
+external-pilot-ready milestone. 73 tests total, all offline/injected or
 platform-simulated — no Salesforce CLI, org, or Windows machine has ever been used in
 this repository's verification.
