@@ -140,7 +140,7 @@ async function runDoctor(projectDir: string, filters: PlanFilters, targetOrg: st
     if (!mutations.length) problems.push('No mutations match the current --include/--exclude/--operators filters.');
     // A broken suppression marker hides nothing, but it does not do what its author
     // thinks it does — which is exactly the kind of thing doctor exists to surface.
-    report.suppressions = plan.problems;
+    report.suppressionProblems = plan.problems;
     for (const problem of plan.problems) problems.push(`Suppression marker in ${problem.file}:${problem.line}: ${problem.message}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown project error.';
@@ -268,6 +268,10 @@ export async function main(argv: string[] = process.argv.slice(2), validate: Val
   }
   const tests = (values.tests ?? []).flatMap((value) => value.split(',')).map((value) => value.trim()).filter(Boolean);
   if (!values['target-org']?.trim() || !tests.length) throw new Error('run requires --target-org and --tests. Use plan for offline generation.');
+  // Say why there is nothing to run, rather than blaming the filters for a suppression.
+  if (!mutations.length && suppressions.suppressed.length) {
+    throw new Error(`Nothing to validate: all ${suppressions.suppressed.length} mutation(s) in scope are suppressed by in-source markers. Run plan to see them and the reasons given.`);
+  }
   // The genuine guard: checked before any mutant source is sent, with no override.
   const orgCheck = await classifyOrg(values['target-org']);
   assertSandboxOrScratch(orgCheck, values['target-org']);

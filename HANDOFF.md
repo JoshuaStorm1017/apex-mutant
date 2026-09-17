@@ -14,7 +14,7 @@ local subprocess shaped like `sf` (`test/salesforce.test.ts`'s fake-executable p
 No real Windows machine exists either — native-Windows behavior is verified by
 simulating `process.platform` in tests, not by running on Windows.
 
-`npm run check`: typecheck + **116** tests + build, all passing. `npm run demo` yields 5
+`npm run check`: typecheck + **117** tests + build, all passing. `npm run demo` yields 5
 mutants against `examples/basic`. CI runs `npm run check`, `npm run demo`, and a real
 tarball-install-and-run smoke test (`scripts/tarball-smoke.mjs`) on every push.
 
@@ -158,6 +158,6 @@ Codex-found output-path symlink fix + doc corrections → Codex-found runner
 API-boundary fixes → doctor/org-gate/Windows-guard → CI-automated tarball smoke test +
 versioned GitHub prerelease → technical-review brief → advisory-first reporting,
 findings, safeguard evidence, and portable exports → equivalent-mutant suppression and
-tool-side stability evidence (this checkpoint). 116 tests total,
+tool-side stability evidence (this checkpoint). 117 tests total,
 all offline/injected or platform-simulated — no Salesforce CLI, org, or Windows machine
 has ever been used in this repository's verification.

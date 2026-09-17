@@ -49,7 +49,7 @@ whether a real org answers the same way twice (still G3's live half).
 
 **Verification performed (all offline; no Salesforce CLI or org was used)**
 
-- `npm run check`: typecheck + **116 tests** (104 → 116) + build, all passing.
+- `npm run check`: typecheck + **117 tests** (104 → 117) + build, all passing.
 - Two behaviors were caught by the new tests rather than by inspection, and fixed:
   (1) the first implementation reported a "directive in a non-line-comment" problem for a
   `//` inside a string literal — it scanned every token's text rather than only comment

@@ -170,8 +170,9 @@ export function buildFindings(report: Report): Finding[] {
     if (result.outcome === 'survived') findings.push(testGap(result));
     else if (result.outcome !== 'killed') findings.push(unprovenMutant(result));
   }
-  for (const mutation of report.suppressions.suppressed) findings.push(suppressedFinding(mutation));
-  for (const [index, problem] of report.suppressions.problems.entries()) {
+  // Optional-chained for the same reason as summarize(): an older report may not carry it.
+  for (const mutation of report.suppressions?.suppressed ?? []) findings.push(suppressedFinding(mutation));
+  for (const [index, problem] of (report.suppressions?.problems ?? []).entries()) {
     findings.push(runQuality(
       `suppression-problem-${index}`,
       `Suppression marker problem in ${problem.file}:${problem.line}`,

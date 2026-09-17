@@ -475,3 +475,28 @@ test('a suppressed mutant is never validated, never scored, and always visible i
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('run says why there is nothing to validate when every in-scope mutant is suppressed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'apex-mutant-cli-allsuppressed-'));
+  try {
+    await writeFile(join(root, 'sfdx-project.json'), JSON.stringify({ packageDirectories: [{ path: 'force-app', default: true }] }));
+    const classes = join(root, 'force-app', 'main', 'default', 'classes');
+    await mkdir(classes, { recursive: true });
+    await writeFile(join(classes, 'Foo.cls'), [
+      'public class Foo {',
+      '  // apex-mutant-disable-next-line all: every mutant here is equivalent by construction',
+      '  void m() { Boolean b = true; }',
+      '}',
+      '',
+    ].join('\n'));
+    await writeFile(join(classes, 'Foo.cls-meta.xml'), '<ApexClass/>');
+    let calls = 0;
+    const validator: Validator = async () => { calls++; return { outcome: 'survived', testsRun: 1 }; };
+    await assert.rejects(
+      main(['run', '--project', root, '--target-org', 'scratch', '--tests', 'FooTest', '--output', join(root, 'out')], validator, scratchClassifier),
+      /all 1 mutation\(s\) in scope are suppressed/);
+    assert.equal(calls, 0, 'no org request is spent when there is nothing to validate');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

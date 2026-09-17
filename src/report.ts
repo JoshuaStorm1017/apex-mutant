@@ -64,7 +64,9 @@ export function summarize(report: Report) {
     total: report.results.length,
     // Suppressed mutants were never validated. Carrying the count next to the score is
     // the whole point: an excluded mutant must be visible, not simply absent.
-    suppressed: report.suppressions.suppressed.length,
+    // Optional-chained on purpose: summarize() is exported, and a caller may hand it a
+    // report parsed from an older schema that predates this field.
+    suppressed: report.suppressions?.suppressed.length ?? 0,
   };
 }
 const escape = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
