@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, writeFile, rm, symlink, readFile, stat } from 'node:fs/
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { readProject, planProject, snapshotProject } from '../src/project.js';
+import { readProject, planProject, snapshotProject, assertSafeRelativePath } from '../src/project.js';
 
 async function fixture(): Promise<string> {
   return mkdtemp(join(tmpdir(), 'apex-mutant-project-'));
@@ -209,5 +209,20 @@ test('snapshotProject rejects file keys that would escape the snapshot directory
     await assert.rejects(snapshotProject(project), /Unsafe file path/);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('assertSafeRelativePath rejects backslash traversal and drive-letter prefixes regardless of the host OS', () => {
+  // These must be rejected on every platform this code might run on, not only on
+  // whichever OS treats '\' as a path separator natively — Apex identifiers never
+  // legitimately contain '\' or ':', so any occurrence here is unsafe by construction.
+  for (const unsafe of [
+    '..\\..\\evil.cls', 'force-app\\..\\..\\evil.cls', 'C:\\evil.cls', 'c:evil.cls',
+    'force-app\\classes\\Foo.cls\\..\\..\\evil.cls', '\\evil.cls',
+  ]) {
+    assert.throws(() => assertSafeRelativePath(unsafe), /Unsafe file path/, unsafe);
+  }
+  for (const safe of ['force-app/classes/Foo.cls', 'Foo.cls', 'a/b/c.trigger']) {
+    assert.doesNotThrow(() => assertSafeRelativePath(safe), safe);
   }
 });

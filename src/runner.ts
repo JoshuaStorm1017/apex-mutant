@@ -2,8 +2,28 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { applyMutation } from './mutations.js';
 import { snapshotProject, assertSafeRelativePath, type Project } from './project.js';
-import { writeReport } from './report.js';
-import type { Mutation, Report, ValidationOptions, Validator, ExecutionResult } from './types.js';
+import { writeReport, assertOutputOutsidePackageDirs } from './report.js';
+import type { Mutation, Report, ValidationOptions, Validator, ExecutionResult, Outcome } from './types.js';
+
+const VALID_OUTCOMES = new Set<Outcome>(['killed', 'survived', 'invalid', 'timeout', 'error']);
+
+/** A custom Validator is arbitrary caller code; never trust its result shape as
+ * evidence without checking it. An unknown outcome, or a 'survived'/'killed' claim
+ * without a real (finite, positive, integer) testsRun count, is downgraded to
+ * `error` rather than silently counted as a kill or a survival. */
+function sanitizeResult(result: ExecutionResult): ExecutionResult {
+  if (!result || typeof result !== 'object' || !VALID_OUTCOMES.has(result.outcome)) {
+    return { outcome: 'error', message: 'Validator returned a result with a missing or unrecognized outcome.' };
+  }
+  const testsRunIsPositiveInteger = Number.isInteger(result.testsRun) && result.testsRun! > 0;
+  if ((result.outcome === 'survived' || result.outcome === 'killed') && !testsRunIsPositiveInteger) {
+    return { outcome: 'error', message: `Validator reported '${result.outcome}' without a valid positive testsRun count; this cannot be trusted as test evidence.` };
+  }
+  if (result.testsRun !== undefined && !(Number.isInteger(result.testsRun) && result.testsRun >= 0)) {
+    return { outcome: 'error', message: `Validator returned a malformed testsRun value for outcome '${result.outcome}'.` };
+  }
+  return result;
+}
 
 export interface RunOptions {
   targetOrg: string;
@@ -19,6 +39,9 @@ export async function runMutations(project: Project, mutations: Mutation[], opti
   if (!options.targetOrg.trim() || !options.tests.length || options.tests.some((t) => !t.trim())) throw new Error('An explicit target org and test class names are required.');
   if (!mutations.length) throw new Error('No mutations selected. Try different source paths or operators.');
   if (!(options.waitMinutes >= 1) || !(options.timeoutMs >= 1)) throw new Error('Wait and timeout must be positive.');
+  // Checked before any snapshot is created or the validator is ever invoked: this is
+  // also the CLI's --output guard, shared so a library caller gets the same guarantee.
+  await assertOutputOutsidePackageDirs(project.root, project.packageDirs, options.output);
   const snapshot = await snapshotProject(project);
   const report: Report = {
     schemaVersion: 1, createdAt: new Date().toISOString(),
@@ -31,7 +54,7 @@ export async function runMutations(project: Project, mutations: Mutation[], opti
     waitMinutes: options.waitMinutes, timeoutMs: options.timeoutMs, signal: options.signal,
   };
   async function execute(): Promise<ExecutionResult> {
-    try { return await validate(validation); }
+    try { return sanitizeResult(await validate(validation)); }
     catch { return { outcome: 'error', message: 'Validator failed unexpectedly. Check local Salesforce CLI configuration.' }; }
   }
   try {

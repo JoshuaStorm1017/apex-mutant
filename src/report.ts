@@ -1,5 +1,5 @@
-import { mkdir, writeFile, rename, realpath } from 'node:fs/promises';
-import { dirname, basename, join } from 'node:path';
+import { mkdir, writeFile, rename, realpath, rm } from 'node:fs/promises';
+import { dirname, basename, join, relative, resolve, isAbsolute, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Report, Outcome } from './types.js';
 
@@ -27,7 +27,30 @@ export async function writeFileAtomic(directory: string, name: string, content: 
   await mkdir(directory, { recursive: true });
   const temporary = join(directory, `.${name}.${randomUUID()}.tmp`);
   await writeFile(temporary, content, { mode });
-  await rename(temporary, join(directory, name));
+  try {
+    await rename(temporary, join(directory, name));
+  } catch (error) {
+    // The rename is the last step; if it fails (cross-device, permissions, a
+    // directory sitting where the file should go), don't leave the temp file behind.
+    await rm(temporary, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+/** Reject an --output directory that is, or resolves through a symlink into, one of
+ * the project's package directories — shared by the CLI and by runMutations() so a
+ * library caller gets the same guarantee the CLI enforces, and checked before any
+ * snapshot is created or validator invoked. Canonicalizes both sides so a symlinked
+ * ancestor of `output` (or of the package directory) can't bypass a lexical check. */
+export async function assertOutputOutsidePackageDirs(root: string, packageDirs: string[], output: string): Promise<void> {
+  const realOutput = await resolveRealPath(resolve(output));
+  for (const directory of packageDirs) {
+    const realPackageDir = await resolveRealPath(resolve(root, directory));
+    const path = relative(realPackageDir, realOutput);
+    if (!path || (!path.startsWith(`..${sep}`) && path !== '..' && !isAbsolute(path))) {
+      throw new Error('Output directory must be outside package directories.');
+    }
+  }
 }
 
 export function summarize(report: Report) {

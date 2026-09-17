@@ -14,8 +14,13 @@ const ignored = new Set(['node_modules', '.git', '.sf', '.sfdx', '.apex-mutant',
 const apexFile = /\.(cls|trigger)(-meta\.xml)?$/i;
 const unix = (path: string) => path.split(sep).join('/');
 // Defense in depth: Project is a public type, so a hand-built one could carry an unsafe key.
+// Checked independent of the host OS: a key built on one platform (or by a caller
+// that never ran it through unix()) may contain '\' traversal or a drive prefix even
+// when this process's own path separator is '/', and vice versa — Apex identifiers
+// never legitimately contain either, so any occurrence here is treated as unsafe.
 export function assertSafeRelativePath(path: string): void {
-  if (!path || isAbsolute(path) || path.split('/').some((part) => part === '' || part === '.' || part === '..')) {
+  if (!path || isAbsolute(path) || /^[A-Za-z]:/.test(path) ||
+    path.split(/[/\\]/).some((part) => part === '' || part === '.' || part === '..')) {
     throw new Error(`Unsafe file path in project snapshot: ${path}`);
   }
 }

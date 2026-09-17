@@ -3,7 +3,7 @@ import { mkdtemp, readFile, readdir, rm, stat, symlink, lstat, writeFile, mkdir 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { renderHtml, reportExitCode, resolveRealPath, summarize, writeReport } from '../src/report.js';
+import { renderHtml, reportExitCode, resolveRealPath, summarize, writeReport, writeFileAtomic, assertOutputOutsidePackageDirs } from '../src/report.js';
 import type { MutationResult, Report } from '../src/types.js';
 
 function mutation(overrides: Partial<MutationResult> = {}): MutationResult {
@@ -125,6 +125,47 @@ test('resolveRealPath resolves an existing symlinked ancestor and appends a not-
     // must still land under the symlink's real target, not the symlink itself.
     const resolved = await resolveRealPath(join(link, 'future', 'output'));
     assert.equal(resolved, join(await resolveRealPath(real), 'future', 'output'));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('writeFileAtomic cleans up its temp file when the final rename fails', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'apex-mutant-atomic-'));
+  try {
+    // A directory sitting where the file should go makes the final rename() fail
+    // (EISDIR/EPERM) without needing to mock the filesystem.
+    await mkdir(join(dir, 'report.json'));
+    await assert.rejects(writeFileAtomic(dir, 'report.json', 'content'));
+    const leftovers = (await readdir(dir)).filter((name) => name !== 'report.json');
+    assert.deepEqual(leftovers, [], 'no orphaned .report.json.<uuid>.tmp file should remain');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('assertOutputOutsidePackageDirs rejects a direct, a not-yet-created nested, and a symlinked-ancestor path into a package directory, and accepts a safe one', { skip: process.platform === 'win32' }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'apex-mutant-outputcheck-'));
+  try {
+    const packageDir = join(root, 'force-app');
+    await mkdir(packageDir, { recursive: true });
+
+    await assert.rejects(assertOutputOutsidePackageDirs(root, ['force-app'], packageDir), /outside package directories/);
+    await assert.rejects(assertOutputOutsidePackageDirs(root, ['force-app'], join(packageDir, 'deep', 'not', 'yet', 'created')), /outside package directories/);
+
+    const elsewhere = join(root, 'elsewhere');
+    await mkdir(elsewhere, { recursive: true });
+    const link = join(root, 'output-link');
+    await symlink(elsewhere, link);
+    await assert.doesNotReject(assertOutputOutsidePackageDirs(root, ['force-app'], link), 'a symlink resolving safely outside the package dir must be accepted');
+
+    const insidePackage = join(packageDir, 'reports');
+    await mkdir(insidePackage, { recursive: true });
+    const badLink = join(root, 'bad-output-link');
+    await symlink(insidePackage, badLink);
+    await assert.rejects(assertOutputOutsidePackageDirs(root, ['force-app'], badLink), /outside package directories/);
+
+    await assert.doesNotReject(assertOutputOutsidePackageDirs(root, ['force-app'], join(root, '.apex-mutant')));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

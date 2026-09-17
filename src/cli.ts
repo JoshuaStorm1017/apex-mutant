@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
-import { resolve, relative, isAbsolute, sep, join } from 'node:path';
+import { resolve, join } from 'node:path';
 import { realpath } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { readProject, planProject } from './project.js';
 import { runMutations } from './runner.js';
 import { validateWithSalesforce } from './salesforce.js';
-import { summarize, reportExitCode, resolveRealPath, writeFileAtomic } from './report.js';
+import { summarize, reportExitCode, assertOutputOutsidePackageDirs, writeFileAtomic } from './report.js';
 import type { Validator } from './types.js';
 
 const help = `Apex Mutant — mutation testing for Salesforce Apex
@@ -67,15 +67,11 @@ export async function main(argv: string[] = process.argv.slice(2), validate: Val
   const threshold = numberOption(values.threshold, 0, '--threshold', 0, 100);
   const project = await readProject(values.project ?? '.');
   const output = resolve(values.output ?? join(project.root, '.apex-mutant'));
-  // Never place report files among metadata being validated. Compare canonical
-  // (symlink-resolved) paths, not the literal strings: an --output directory that
-  // is, or sits behind, a symlink into a package directory must not pass this check
-  // just because its own path text looks disjoint from the package directory's.
-  const realOutput = await resolveRealPath(output);
-  for (const directory of project.packageDirs) {
-    const realPackageDir = await resolveRealPath(resolve(project.root, directory));
-    const path = relative(realPackageDir, realOutput);
-    if (!path || (!path.startsWith(`..${sep}`) && path !== '..' && !isAbsolute(path))) throw new Error('--output must be outside package directories.');
+  // Shared with runMutations() so a library caller gets the same guarantee.
+  try {
+    await assertOutputOutsidePackageDirs(project.root, project.packageDirs, output);
+  } catch {
+    throw new Error('--output must be outside package directories.');
   }
   const mutations = planProject(project, { include: values.include, exclude: values.exclude,
     operators: values.operators?.split(',').map((v) => v.trim()).filter(Boolean), maxMutants });

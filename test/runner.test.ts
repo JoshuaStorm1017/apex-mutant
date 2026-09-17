@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, stat, mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { applyMutation, generateMutations } from '../src/mutations.js';
@@ -35,6 +36,70 @@ test('runMutations validates its inputs before touching the filesystem', async (
   await assert.rejects(runMutations(p, [], baseOptions(), validator), /No mutations selected/);
   await assert.rejects(runMutations(p, mutations, baseOptions({ waitMinutes: 0 }), validator), /positive/);
   await assert.rejects(runMutations(p, mutations, baseOptions({ timeoutMs: 0 }), validator), /positive/);
+});
+
+test('runMutations rejects an --output inside a package directory before creating a snapshot, invoking the validator, or touching any fixture file', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'apex-mutant-runner-outputcheck-'));
+  try {
+    await mkdir(join(root, 'force-app'), { recursive: true });
+    const classFile = join(root, 'force-app', 'A.cls');
+    await writeFile(classFile, SOURCE_A);
+    const originalBytes = await readFile(classFile);
+    const p: Project = { root, packageDirs: ['force-app'], files: new Map([['force-app/A.cls', SOURCE_A]]), config: {} };
+    const mutations = generateMutations(SOURCE_A, 'force-app/A.cls');
+    let calls = 0;
+    const validator: Validator = async () => { calls++; return { outcome: 'survived', testsRun: 1 }; };
+    await assert.rejects(
+      runMutations(p, mutations, baseOptions({ output: join(root, 'force-app', 'reports') }), validator),
+      /outside package directories/,
+    );
+    assert.equal(calls, 0, 'the validator must never be invoked when --output is unsafe');
+    assert.deepEqual(await readFile(classFile), originalBytes, 'the fixture must be untouched by a rejected run');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("runMutations sanitizes a custom validator's baseline result: unknown/malformed contracts never pass the gate", async () => {
+  const p = project({ 'force-app/A.cls': SOURCE_A });
+  const mutations = generateMutations(SOURCE_A, 'force-app/A.cls');
+  const badResults: unknown[] = [
+    { outcome: 'survived' }, { outcome: 'survived', testsRun: 0 }, { outcome: 'survived', testsRun: NaN },
+    { outcome: 'survived', testsRun: -1 }, { outcome: 'survived', testsRun: 1.5 }, { outcome: 'killed', testsRun: 0 },
+    { outcome: 'mysterious-new-outcome', testsRun: 5 }, {}, null, undefined,
+  ];
+  for (const bad of badResults) {
+    let calls = 0;
+    const validator: Validator = async () => { calls++; return bad as ExecutionResult; };
+    const report = await runMutations(p, mutations, baseOptions(), validator);
+    assert.equal(calls, 1, `only the baseline should run: ${JSON.stringify(bad)}`);
+    assert.equal(report.baseline.outcome, 'error', JSON.stringify(bad));
+    assert.equal(report.complete, false);
+  }
+});
+
+test('a mutant claiming survived without a real positive testsRun count is downgraded to error and stops the run: exact reported scenario', async () => {
+  const p = project({ 'force-app/A.cls': SOURCE_A });
+  const mutations = generateMutations(SOURCE_A, 'force-app/A.cls');
+  assert.ok(mutations.length >= 2);
+  let call = 0;
+  // Baseline genuinely survives; the mutant's "survived" claim carries zero executed
+  // tests, which must never be trusted as evidence that the tests actually ran.
+  const results: unknown[] = [{ outcome: 'survived', testsRun: 1 }, { outcome: 'survived', testsRun: 0 }];
+  const validator: Validator = async () => results[call++] as ExecutionResult;
+  const report = await runMutations(p, mutations, baseOptions(), validator);
+  assert.equal(report.results.length, 1, 'the error must stop the loop rather than continue to the next mutant');
+  assert.equal(report.results[0].outcome, 'error');
+  assert.match(report.results[0].message ?? '', /testsRun/);
+  assert.equal(report.complete, false);
+});
+
+test('a validator result with a genuinely valid contract passes through untouched', async () => {
+  const p = project({ 'force-app/A.cls': SOURCE_A });
+  const mutations = generateMutations(SOURCE_A, 'force-app/A.cls');
+  const validator: Validator = async () => ({ outcome: 'survived', testsRun: 3, message: 'ok' });
+  const report = await runMutations(p, mutations, baseOptions(), validator);
+  assert.deepEqual(report.baseline, { outcome: 'survived', testsRun: 3, message: 'ok' });
 });
 
 test('a failing baseline stops before any mutant is validated and the snapshot is cleaned up', async () => {
