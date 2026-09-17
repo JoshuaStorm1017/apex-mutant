@@ -26,6 +26,7 @@ function report(overrides: Partial<Report> = {}): Report {
       sourceIntegrity: { verified: true, unchanged: true, filesChecked: 2, changedFiles: [], message: 'All 2 file(s) are identical.' },
       notes: [],
     },
+    suppressions: { suppressed: [], problems: [] },
     baseline: { outcome: 'survived', testsRun: 3 },
     results: [mutation()], totalPlanned: 1, complete: true, ...overrides,
   };

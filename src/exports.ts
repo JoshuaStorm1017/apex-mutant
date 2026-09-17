@@ -146,6 +146,7 @@ export function toMarkdown(report: Report): string {
     `- Work items: ${report.traceability.workItems.length ? report.traceability.workItems.map(mdText).join(', ') : 'none recorded'}`,
     `- Mode: ${report.policy.mode}${report.policy.mode === 'enforce' ? ` (threshold ${report.policy.threshold}%)` : ''}`,
     `- Mutants: ${summary.total}/${report.totalPlanned} evaluated, killed ${summary.killed}, survived ${summary.survived}, inconclusive ${summary.invalid + summary.timeout + summary.error}`,
+    `- Suppressed: ${summary.suppressed} mutant(s) excluded by in-source markers (never validated, never scored)`,
     `- Mutation score: ${score}`,
     '',
     `> ${advisoryNotice(report.policy)}`,

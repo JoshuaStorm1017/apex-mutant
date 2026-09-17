@@ -407,3 +407,71 @@ test('run --json prints the findings alongside the report so a pipeline never ha
     await rm(root, { recursive: true, force: true });
   }
 });
+
+async function suppressedFixtureProject(): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), 'apex-mutant-cli-suppressed-'));
+  await writeFile(join(root, 'sfdx-project.json'), JSON.stringify({ packageDirectories: [{ path: 'force-app', default: true }] }));
+  const classes = join(root, 'force-app', 'main', 'default', 'classes');
+  await mkdir(classes, { recursive: true });
+  await writeFile(join(classes, 'Foo.cls'), [
+    'public class Foo {',
+    '  // apex-mutant-disable-next-line boolean-literal: this flag is a compile-time constant',
+    '  void m() { Boolean b = true; Integer x = 1 * 2; }',
+    '  // apex-mutant-disable-next-line all: nothing here any more',
+    '}',
+    '',
+  ].join('\n'));
+  await writeFile(join(classes, 'Foo.cls-meta.xml'), '<ApexClass/>');
+  return root;
+}
+
+test('plan lists suppressed mutants with their reasons, excludes them from the plan, and flags a stale marker', async () => {
+  const root = await suppressedFixtureProject();
+  const output = join(root, 'out');
+  try {
+    const { logs, errors } = await capture(() => main(['plan', '--project', root, '--output', output]));
+    assert.ok(logs.some((l) => l.includes('1 mutations planned')), 'the suppressed mutant is not planned');
+    assert.ok(logs.some((l) => l.includes('1 mutation(s) suppressed by in-source markers')));
+    assert.ok(logs.some((l) => l.includes('this flag is a compile-time constant')), 'the reason is shown, not just a count');
+    assert.ok(errors.some((l) => l.includes('matches no mutation')), 'the stale marker is reported, not silently accepted');
+
+    const plan = JSON.parse(await readFile(join(output, 'plan.json'), 'utf8'));
+    assert.equal(plan.total, 1);
+    assert.equal(plan.suppressed.length, 1);
+    assert.equal(plan.suppressed[0].operator, 'boolean-literal');
+    assert.equal(plan.suppressed[0].reason, 'this flag is a compile-time constant');
+    assert.equal(plan.suppressionProblems.length, 1);
+    assert.equal(plan.mutations.some((m: { operator: string }) => m.operator === 'boolean-literal'), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a suppressed mutant is never validated, never scored, and always visible in the report', async () => {
+  const root = await suppressedFixtureProject();
+  const output = join(root, 'out');
+  try {
+    let calls = 0;
+    const validator: Validator = async () => ({ outcome: calls++ === 0 ? 'survived' : 'killed', testsRun: 2 });
+    const { logs } = await capture(() => main(['run', '--project', root, '--target-org', 'scratch', '--tests', 'FooTest', '--output', output, '--export', 'md'], validator, scratchClassifier));
+    assert.equal(calls, 2, 'baseline plus the one unsuppressed mutant — the suppressed one costs no org request');
+    assert.ok(logs.some((l) => l.includes('Mutation score: 100.0%')));
+
+    const report = JSON.parse(await readFile(join(output, 'report.json'), 'utf8'));
+    assert.equal(report.totalPlanned, 1);
+    assert.equal(report.summary.suppressed, 1, 'the excluded mutant is counted where the score is reported');
+    assert.equal(report.suppressions.suppressed[0].reason, 'this flag is a compile-time constant');
+    assert.equal(report.suppressions.problems.length, 1);
+    const suppressedFinding = report.findings.find((f: { category: string }) => f.category === 'suppressed');
+    assert.ok(suppressedFinding, 'a suppressed mutant is a finding, not an absence');
+    assert.match(suppressedFinding.detail, /excluded from the score's denominator/);
+    assert.ok(report.findings.some((f: { title: string }) => f.title.includes('Suppression marker problem')));
+
+    const markdown = await readFile(join(output, 'summary.md'), 'utf8');
+    assert.ok(markdown.includes('- Suppressed: 1 mutant(s) excluded by in-source markers'));
+    const html = await readFile(join(output, 'report.html'), 'utf8');
+    assert.ok(html.includes('were suppressed by in-source markers and never validated'));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

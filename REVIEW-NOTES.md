@@ -3,6 +3,63 @@
 Concise, evidence-based log per checkpoint for Codex's medium-depth review. No
 Salesforce CLI or org is available or used anywhere in this log.
 
+## Checkpoint F — equivalent-mutant suppression and tool-side stability evidence
+
+Closes the two gaps checkpoint E documented as buildable without an org
+(`docs/REQUIREMENTS.md` G1 and the offline half of G3). Both are readiness items the
+enforcement checklist itself asks for, so shipping the checklist without them would have
+been asking users for evidence the tool made impossible to collect.
+
+**Design change from the proposal, and why.** `docs/REQUIREMENTS.md` originally proposed
+a suppression file keyed on mutation IDs. Implementing it revealed that would not work:
+`mutationId` hashes the **entire file's source**, so every suppression in a file would go
+stale on any edit anywhere in it — including edits far from the suppressed line. The
+feature is therefore in-source and location-based:
+
+    // apex-mutant-disable-next-line conditional-boundary: i is never 0 here
+    Boolean b = true; // apex-mutant-disable-line all: compile-time constant
+
+- Markers are read from the **lexer's comment tokens** (`ApexLexer.LINE_COMMENT`), not by
+  scanning text. Verified: a `//` inside a string literal is a string, and suppresses
+  nothing (`test/suppressions.test.ts`). This keeps the AGENTS.md rule — never guess at
+  Apex syntax — rather than trading it for a convenient regex.
+- A directive inside a `/* … */` block comment is **reported, not honored**: commenting
+  code out is not the same as suppressing a mutant.
+- A reason is mandatory (≥5 non-space characters). Missing reason, unknown operator,
+  typo'd directive, and stale markers all suppress nothing and are reported — by `plan`
+  (stderr), `run` (stderr), the report's findings, and `doctor` (non-zero exit).
+- Suppression is applied during planning, **before** `--include`/`--exclude`/
+  `--operators`/`--max-mutants`, so narrowing a run can never resurrect a suppressed
+  mutant. Unused-marker detection deliberately runs against each file's *complete*
+  mutation set, so filtering a run does not make other markers look stale.
+- Suppressed mutants cost no org request (never validated), never enter the score, and
+  are always visible: `plan` output, `plan.json` (now `schemaVersion: 2`), the report's
+  `suppressions`, a `suppressed` finding carrying the stated reason, and a `suppressed`
+  count in the summary beside the score.
+
+**Stale markers are reported, not fatal.** A stale marker hides nothing — nothing was
+suppressed — but its author believes otherwise. Failing the run over a comment typo would
+be worse than saying so loudly in four places.
+
+**Stability evidence.** `test/runner.test.ts` now runs the same project twice with the
+same injected validator and compares the **whole report**, allowing only `runId` and
+timestamps to differ. Scope is stated honestly in the test and in
+`docs/TECHNICAL-REVIEW.md`: this is determinism in the tool, and says nothing about
+whether a real org answers the same way twice (still G3's live half).
+
+**Verification performed (all offline; no Salesforce CLI or org was used)**
+
+- `npm run check`: typecheck + **116 tests** (104 → 116) + build, all passing.
+- Two behaviors were caught by the new tests rather than by inspection, and fixed:
+  (1) the first implementation reported a "directive in a non-line-comment" problem for a
+  `//` inside a string literal — it scanned every token's text rather than only comment
+  tokens; (2) a typo'd directive (`apex-mutant-disable-everything`) was silently ignored,
+  so a user's intended suppression would have done nothing quietly. Both now behave as
+  the tests assert.
+- `OPERATOR_IDS` is now exported from `src/mutations.ts` and used by suppression-scope
+  validation and by the findings-guidance coverage test, so a new operator cannot be
+  added without both noticing.
+
 ## Checkpoint E — advisory-first reporting, findings, safeguard evidence, portable exports
 
 Source of the requirements: external review feedback on this project, turned into

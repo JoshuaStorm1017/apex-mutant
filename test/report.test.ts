@@ -24,6 +24,7 @@ function report(overrides: Partial<Report> = {}): Report {
       validator: 'test validator', validationOnly: false, snapshotIsolated: true,
       orgCheck: null, sourceIntegrity: null, notes: [],
     },
+    suppressions: { suppressed: [], problems: [] },
     baseline: { outcome: 'survived', testsRun: 3 },
     results: [], totalPlanned: 0, complete: false, ...overrides,
   };
@@ -33,7 +34,7 @@ const enforcing = (threshold: number): Report['policy'] => ({ mode: 'enforce', t
 test('summarize counts each outcome and reports score as null with no scored mutants', () => {
   const r = report({ results: [mutation({ outcome: 'killed' }), mutation({ outcome: 'survived' }), mutation({ outcome: 'invalid' }), mutation({ outcome: 'timeout' }), mutation({ outcome: 'error' })] });
   const s = summarize(r);
-  assert.deepEqual(s, { killed: 1, survived: 1, invalid: 1, timeout: 1, error: 1, scored: 2, total: 5, score: 50 });
+  assert.deepEqual(s, { killed: 1, survived: 1, invalid: 1, timeout: 1, error: 1, scored: 2, total: 5, score: 50, suppressed: 0 });
   assert.equal(summarize(report()).score, null);
   assert.equal(summarize(report({ results: [mutation({ outcome: 'invalid' })] })).score, null);
 });

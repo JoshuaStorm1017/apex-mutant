@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { applyMutation, generateMutations } from '../src/mutations.js';
+import { buildFindings } from '../src/findings.js';
 import { runMutations, type RunOptions } from '../src/runner.js';
 import type { ExecutionResult, Project, Validator } from '../src/types.js';
 
@@ -360,5 +361,41 @@ test('exports are still written when the baseline never passes, so a failed run 
     assert.ok(markdown.includes('Baseline validation did not pass'));
   } finally {
     await rm(output, { recursive: true, force: true });
+  }
+});
+
+test('two runs over unchanged source produce identical mutants, outcomes, and findings', async () => {
+  // Readiness item 2 (stability) is evidence a team has to gather from its own runs; this
+  // is the part apex-mutant can prove on its own — that nothing in the tool itself varies
+  // between runs. It says nothing about a real org's behavior.
+  const p = project({ 'force-app/A.cls': SOURCE_A, 'force-app/B.cls': SOURCE_B });
+  const first = await mkdtemp(join(tmpdir(), 'apex-mutant-stable-1-'));
+  const second = await mkdtemp(join(tmpdir(), 'apex-mutant-stable-2-'));
+  try {
+    const plan = () => [...generateMutations(SOURCE_A, 'force-app/A.cls'), ...generateMutations(SOURCE_B, 'force-app/B.cls')];
+    assert.deepEqual(plan(), plan(), 'mutation generation itself is deterministic');
+    let call = 0;
+    const alternating: Validator = async () => (call++ % 2 === 0 ? { outcome: 'survived', testsRun: 2 } : { outcome: 'killed', testsRun: 2 });
+    const runOnce = async (output: string) => {
+      call = 0;
+      return runMutations(p, plan(), baseOptions({ output, workItems: ['ABC-1'] }), alternating);
+    };
+    const a = await runOnce(first);
+    const b = await runOnce(second);
+
+    const comparable = (report: Awaited<ReturnType<typeof runOnce>>) => ({
+      ...report,
+      createdAt: 'pinned',
+      traceability: { ...report.traceability, runId: 'pinned' },
+      results: report.results.map((result) => ({ ...result, durationMs: undefined })),
+    });
+    assert.deepEqual(comparable(a), comparable(b), 'only the run id and timestamps may differ between runs');
+    assert.notEqual(a.traceability.runId, b.traceability.runId, 'each run is still individually identifiable');
+
+    const findingsOf = (report: Awaited<ReturnType<typeof runOnce>>) => buildFindings(report).map((f) => `${f.id}:${f.priority}:${f.title}`);
+    assert.deepEqual(findingsOf(a), findingsOf(b));
+  } finally {
+    await rm(first, { recursive: true, force: true });
+    await rm(second, { recursive: true, force: true });
   }
 });

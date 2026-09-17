@@ -2,7 +2,8 @@ import { lstat, readdir, readFile, mkdir, writeFile, mkdtemp, rm } from 'node:fs
 import { resolve, relative, join, isAbsolute, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { generateMutations } from './mutations.js';
-import type { Mutation, SourceIntegrity } from './types.js';
+import { applySuppressions, findSuppressions, staleMarkerProblem } from './suppressions.js';
+import type { Mutation, SourceIntegrity, SuppressedMutation, SuppressionProblem } from './types.js';
 
 export interface Project {
   root: string;
@@ -73,20 +74,50 @@ export async function readProject(directory: string): Promise<Project> {
 }
 
 export interface PlanOptions { include?: string[]; exclude?: string[]; operators?: string[]; maxMutants?: number }
-export function planProject(project: Project, options: PlanOptions = {}): Mutation[] {
+export interface PlanResult {
+  mutations: Mutation[];
+  suppressed: SuppressedMutation[];
+  problems: SuppressionProblem[];
+}
+
+/** Generate the plan, honoring in-source suppression markers.
+ *
+ * Suppression is applied per file immediately after generation — before the operator
+ * filter and before `maxMutants` — so a suppressed mutant is excluded no matter how the
+ * run is narrowed, and so a marker is only called stale when it matches nothing in that
+ * file's *complete* mutation set rather than in whatever subset this invocation asked
+ * for. Files excluded by --include/--exclude are never scanned: their markers are not
+ * this run's business. */
+export function planProjectDetailed(project: Project, options: PlanOptions = {}): PlanResult {
   const matches = (file: string, filters: string[]) => filters.some((prefix) => file === prefix || file.startsWith(prefix.replace(/\/$/, '') + '/'));
   const mutations: Mutation[] = [];
+  const suppressedMutations: SuppressedMutation[] = [];
+  const problems: SuppressionProblem[] = [];
   for (const [file, source] of project.files) {
     if (!/\.(cls|trigger)$/i.test(file)) continue;
     if (options.include?.length && !matches(file, options.include)) continue;
     if (options.exclude?.length && matches(file, options.exclude)) continue;
-    mutations.push(...generateMutations(source, file));
+    const { markers, problems: markerProblems } = findSuppressions(source, file);
+    problems.push(...markerProblems);
+    const { kept, suppressed, unusedMarkers } = applySuppressions(generateMutations(source, file), markers);
+    problems.push(...unusedMarkers.map(staleMarkerProblem));
+    mutations.push(...kept);
+    suppressedMutations.push(...suppressed);
   }
-  const selected = options.operators?.length ? mutations.filter((m) => options.operators!.includes(m.operator)) : mutations;
+  const operators = options.operators?.length ? options.operators : undefined;
+  const selected = operators ? mutations.filter((m) => operators.includes(m.operator)) : mutations;
   if (options.maxMutants !== undefined && (!Number.isInteger(options.maxMutants) || options.maxMutants < 1)) {
     throw new Error('maxMutants must be a positive integer.');
   }
-  return selected.slice(0, options.maxMutants);
+  return {
+    mutations: selected.slice(0, options.maxMutants),
+    suppressed: operators ? suppressedMutations.filter((m) => operators.includes(m.operator)) : suppressedMutations,
+    problems,
+  };
+}
+
+export function planProject(project: Project, options: PlanOptions = {}): Mutation[] {
+  return planProjectDetailed(project, options).mutations;
 }
 
 export async function snapshotProject(project: Project): Promise<{ directory: string; cleanup: () => Promise<void> }> {

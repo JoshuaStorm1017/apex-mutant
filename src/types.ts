@@ -1,3 +1,20 @@
+export interface SuppressionMarker {
+  file: string;
+  /** Line the marker comment itself is on (1-based). */
+  line: number;
+  /** An operator ID, or 'all'. */
+  scope: string;
+  reason: string;
+  /** Line whose mutations this marker suppresses. */
+  appliesToLine: number;
+}
+
+export interface SuppressionProblem {
+  file: string;
+  line: number;
+  message: string;
+}
+
 export interface Mutation {
   id: string;
   file: string;
@@ -8,6 +25,11 @@ export interface Mutation {
   column: number;
   original: string;
   replacement: string;
+}
+
+export interface SuppressedMutation extends Mutation {
+  reason: string;
+  markerLine: number;
 }
 
 export type Outcome = 'survived' | 'killed' | 'invalid' | 'timeout' | 'error';
@@ -77,6 +99,14 @@ export interface RunSafeguards {
   notes: string[];
 }
 
+/** Mutants excluded from the run because the source says, with a reason, that no test
+ * could kill them — plus every problem found in those markers. Both travel with the
+ * report so an excluded mutant is visible rather than simply absent. */
+export interface SuppressionRecord {
+  suppressed: SuppressedMutation[];
+  problems: SuppressionProblem[];
+}
+
 export interface Report {
   schemaVersion: 2;
   tool: { name: string; version: string };
@@ -84,6 +114,7 @@ export interface Report {
   policy: EnforcementPolicy;
   traceability: Traceability;
   safeguards: RunSafeguards;
+  suppressions: SuppressionRecord;
   baseline: ExecutionResult;
   results: MutationResult[];
   totalPlanned: number;

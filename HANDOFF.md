@@ -14,7 +14,7 @@ local subprocess shaped like `sf` (`test/salesforce.test.ts`'s fake-executable p
 No real Windows machine exists either — native-Windows behavior is verified by
 simulating `process.platform` in tests, not by running on Windows.
 
-`npm run check`: typecheck + **104** tests + build, all passing. `npm run demo` yields 5
+`npm run check`: typecheck + **116** tests + build, all passing. `npm run demo` yields 5
 mutants against `examples/basic`. CI runs `npm run check`, `npm run demo`, and a real
 tarball-install-and-run smoke test (`scripts/tarball-smoke.mjs`) on every push.
 
@@ -54,9 +54,23 @@ policy is encoded anywhere in the repo:
   into the report and every export. CSV defuses spreadsheet formula injection
   (`src/exports.ts`).
 
+Equivalent-mutant suppression landed in the same milestone: in-source
+`// apex-mutant-disable-next-line <operator|all>: <reason>` markers, read from the
+lexer's comment tokens (so a `//` in a string literal is a string), with a mandatory
+reason. Suppressed mutants are never validated, never scored, and always listed with
+their reason; malformed, unknown-operator, and stale markers suppress nothing and are
+reported by `plan`, `run`, `doctor`, and the report's findings. Suppression is applied
+before every filter, so narrowing a run cannot resurrect a suppressed mutant
+(`src/suppressions.ts`, `planProjectDetailed` in `src/project.ts`).
+
+Tool-side run-to-run stability is now tested too: two runs over unchanged source produce
+identical reports apart from `runId` and timestamps. That is determinism in this tool
+only — it says nothing about a real org's stability, which still needs a pilot.
+
 Report `schemaVersion` is now **2** (`tool`, `policy`, `traceability`, `safeguards` are
-new top-level fields; `report.json` also carries derived `findings`, `hotspots`, and the
-readiness checklist). `reportExitCode(report)` now reads the policy from the report
+and `suppressions` are new top-level fields; `report.json` also carries derived
+`findings`, `hotspots`, and the readiness checklist). `plan.json` is `schemaVersion: 2`
+as well, with `suppressed` and `suppressionProblems`. `reportExitCode(report)` now reads the policy from the report
 instead of taking a threshold argument — a breaking library API change, acceptable at
 alpha and called out here deliberately.
 
@@ -104,15 +118,15 @@ Nothing was published.
 - Coverage-scoped test selection and mutation grouping are not implemented; both are
   compatible with validation-only in principle but need a live org to build and verify
   (see `docs/COMPARISON.md`).
-- **No equivalent-mutant suppression.** Surviving mutants carry a per-operator
-  `equivalenceRisk` heuristic, but there is no way to record "this mutant is equivalent,
-  here's why" and exclude it, so a genuinely equivalent mutant permanently caps the
-  score and re-appears every run (`docs/REQUIREMENTS.md` G1 — the highest-value offline
-  gap left).
-- **No runtime or stability evidence.** Readiness items 1 and 2 (a full run's wall-clock
-  time, and identical outcomes across repeated runs) are unmeasured; the offline half of
-  the stability test could be written today (`docs/REQUIREMENTS.md` G3), the runtime half
-  needs a live org.
+- **No runtime evidence, and no org-side stability evidence.** Readiness item 1 (a full
+  run's wall-clock time on a real codebase) is unmeasured, and the tool-side determinism
+  test says nothing about whether a real org answers the same way twice
+  (`docs/REQUIREMENTS.md` G2/G3) — both need a live org.
+- **Suppression is location-based, not identity-based.** An in-source marker follows the
+  code it sits next to, but moving that code to another line (or another file) leaves a
+  stale marker. That is reported loudly, never silently honored, but it is still manual
+  upkeep.
+- No resumable runs (`docs/REQUIREMENTS.md` G4).
 
 ## Next priorities
 
@@ -120,11 +134,10 @@ Nothing was published.
    `docs/TECHNICAL-REVIEW.md`'s "Synthetic pilot recipe" is ready to run as-is against
    `examples/basic`; update that doc's acceptance matrix and this file with the actual
    result (pass or fail, exact `sf` CLI version) once someone does it.
-2. **Equivalent-mutant suppression** (`docs/REQUIREMENTS.md` G1) and the **offline
-   stability test** (G3) — both are buildable and verifiable today, without an org, and
-   both are readiness items the enforcement checklist explicitly asks for.
-3. **Real Windows verification** (or a real WSL run) of `plan`, `doctor`, and the
+2. **Real Windows verification** (or a real WSL run) of `plan`, `doctor`, and the
    native-Windows early-error path for `run`.
+3. **Resumable runs** (`docs/REQUIREMENTS.md` G4) — the largest remaining
+   offline-buildable gap, and the one that most reduces the cost of a long pilot run.
 4. Per `docs/COMPARISON.md`: coverage-scoped test selection and mutation grouping,
    once org access exists to build and verify them against.
 5. Consider filing the interruption-safety observation about
@@ -144,6 +157,7 @@ Review/testing history: engine/adapter → root-module + CLI integration tests �
 Codex-found output-path symlink fix + doc corrections → Codex-found runner
 API-boundary fixes → doctor/org-gate/Windows-guard → CI-automated tarball smoke test +
 versioned GitHub prerelease → technical-review brief → advisory-first reporting,
-findings, safeguard evidence, and portable exports (this checkpoint). 104 tests total,
+findings, safeguard evidence, and portable exports → equivalent-mutant suppression and
+tool-side stability evidence (this checkpoint). 116 tests total,
 all offline/injected or platform-simulated — no Salesforce CLI, org, or Windows machine
 has ever been used in this repository's verification.

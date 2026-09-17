@@ -4,7 +4,7 @@ import { resolve, join } from 'node:path';
 import { realpath } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
-import { readProject, planProject } from './project.js';
+import { readProject, planProjectDetailed } from './project.js';
 import { runMutations } from './runner.js';
 import { validateWithSalesforce } from './salesforce.js';
 import { classifyTargetOrg, assertSandboxOrScratch } from './orgSafety.js';
@@ -49,6 +49,14 @@ Options:
 
 Reporting is advisory by default: the mutation score never changes the exit code
 unless you pass --enforce with a --threshold you chose deliberately.
+
+Suppressing a mutant no test could ever kill (an equivalent mutant) is done in the
+Apex source itself, and always with a stated reason:
+  // apex-mutant-disable-next-line conditional-boundary: index is never 0 here
+  // apex-mutant-disable-line all: unreachable by construction
+Suppressed mutants are never validated, never scored, and always listed in the
+report with their reason. A marker with no reason, an unknown operator, or one that
+matches nothing is reported as a problem and honors nothing.
 Source is never edited; run sends Apex-only snapshots via --dry-run.
 Existing non-Apex dependencies must already be installed in the target org.
 run only proceeds against an org the Salesforce CLI itself classifies as a
@@ -114,12 +122,14 @@ async function runDoctor(projectDir: string, filters: PlanFilters, targetOrg: st
 
   try {
     const project = await readProject(projectDir);
-    const mutations = planProject(project, filters);
+    const plan = planProjectDetailed(project, filters);
+    const mutations = plan.mutations;
     const targetedFiles = new Set(mutations.map((m) => m.file)).size;
     const totalApexFiles = [...project.files.keys()].filter((f) => /\.(cls|trigger)$/i.test(f)).length;
     report.project = {
       root: project.root, packageDirs: project.packageDirs,
       mutationsPlanned: mutations.length, targetedFiles, totalApexFilesInSnapshot: totalApexFiles,
+      mutationsSuppressed: plan.suppressed.length,
       note: '--include/--exclude/--operators only narrow which mutations are tested. The snapshot ' +
         `sent to any org during \`run\` always contains all ${totalApexFiles} Apex file(s) found under your ` +
         'package directories, not just the targeted ones — Salesforce needs the whole codebase to compile-check a class.',
@@ -128,6 +138,10 @@ async function runDoctor(projectDir: string, filters: PlanFilters, targetOrg: st
       ? `1 baseline + up to ${mutations.length} mutant validation-deploy(s), each subject to --wait/--timeout.`
       : 'No mutations match the current filters; run would refuse to start.';
     if (!mutations.length) problems.push('No mutations match the current --include/--exclude/--operators filters.');
+    // A broken suppression marker hides nothing, but it does not do what its author
+    // thinks it does — which is exactly the kind of thing doctor exists to surface.
+    report.suppressions = plan.problems;
+    for (const problem of plan.problems) problems.push(`Suppression marker in ${problem.file}:${problem.line}: ${problem.message}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown project error.';
     report.project = { error: message };
@@ -159,6 +173,7 @@ async function runDoctor(projectDir: string, filters: PlanFilters, targetOrg: st
     else {
       console.log(`Project: ${p.root} (package dirs: ${(p.packageDirs as string[]).join(', ')})`);
       console.log(`Plan: ${p.mutationsPlanned} mutation(s) across ${p.targetedFiles} targeted file(s); snapshot always includes all ${p.totalApexFilesInSnapshot} Apex file(s).`);
+      if (p.mutationsSuppressed) console.log(`Suppressed by in-source markers: ${p.mutationsSuppressed} mutation(s) — excluded from the plan and from any score.`);
       console.log(`Estimated run cost: ${report.estimatedRunCost as string}`);
     }
     console.log(`Salesforce CLI: ${sf.available ? `found (${sf.detail})` : `NOT AVAILABLE — ${sf.detail}`}`);
@@ -222,17 +237,32 @@ export async function main(argv: string[] = process.argv.slice(2), validate: Val
   } catch {
     throw new Error('--output must be outside package directories.');
   }
-  const mutations = planProject(project, planFilters);
+  const planned = planProjectDetailed(project, planFilters);
+  const mutations = planned.mutations;
+  const suppressions = { suppressed: planned.suppressed, problems: planned.problems };
+  const reportSuppressionProblems = () => {
+    for (const problem of planned.problems) {
+      console.error(`Apex Mutant: suppression marker in ${problem.file}:${problem.line}: ${problem.message}`);
+    }
+  };
   if (command === 'plan') {
-    const plan = { schemaVersion: 1, total: mutations.length, mutations };
+    const plan = {
+      schemaVersion: 2, total: mutations.length, mutations,
+      suppressed: planned.suppressed, suppressionProblems: planned.problems,
+    };
     await writeFileAtomic(output, 'plan.json', JSON.stringify(plan, null, 2) + '\n');
     if (values.json) console.log(JSON.stringify(plan, null, 2));
     else {
       console.log(`Apex Mutant · ${mutations.length} mutations planned`);
       for (const m of mutations) console.log(`${m.id}  ${m.file}:${m.line}:${m.column}  ${m.operator}  ${JSON.stringify(m.original)} → ${JSON.stringify(m.replacement)}`);
+      if (planned.suppressed.length) {
+        console.log(`\n${planned.suppressed.length} mutation(s) suppressed by in-source markers:`);
+        for (const m of planned.suppressed) console.log(`  ${m.file}:${m.line}:${m.column}  ${m.operator}  — ${m.reason} (marker on line ${m.markerLine})`);
+      }
       console.log(`\nPlan saved to ${join(output, 'plan.json')}`);
       console.log('No Salesforce requests made.');
     }
+    reportSuppressionProblems();
     if (!mutations.length) process.exitCode = 2;
     return;
   }
@@ -248,10 +278,12 @@ export async function main(argv: string[] = process.argv.slice(2), validate: Val
   const cancel = () => { console.error('Stopping; preserving completed results.'); abort.abort(); };
   process.once('SIGINT', cancel); process.once('SIGTERM', cancel);
   try {
+    reportSuppressionProblems();
+    if (suppressions.suppressed.length) console.error(`${suppressions.suppressed.length} mutant(s) suppressed by in-source markers; they are listed in the report and excluded from the score.`);
     console.error(`Validating baseline, then up to ${mutations.length} mutants. Every request uses --dry-run.`);
     const report = await runMutations(project, mutations, {
       targetOrg: values['target-org'], tests, waitMinutes, timeoutMs, output, signal: abort.signal,
-      policy, workItems, exports: exportFormats,
+      policy, workItems, exports: exportFormats, suppressions,
       safeguards: {
         validator: builtIn
           ? `${TOOL_NAME} ${VERSION} built-in Salesforce validator (sf project deploy start --dry-run --test-level RunSpecifiedTests)`

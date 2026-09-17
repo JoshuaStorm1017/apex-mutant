@@ -268,6 +268,37 @@ turns the run into prioritized findings:
   never read as a clean one.
 - **Hotspots** — files ranked by surviving mutants and weakest per-file score: where the
   assertion debt actually concentrates.
+- **Suppressed mutants** — anything excluded by an in-source marker, with the reason given
+  for it, so an exclusion is visible rather than simply missing.
+
+## Suppressing an equivalent mutant
+
+Some surviving mutants cannot be killed by any test — the mutated code is behaviorally
+identical to the original. Left alone they permanently cap the score and re-appear in
+every run, which is how a mutation score quietly stops meaning anything. Suppress them
+in the Apex source, next to the code, always with a reason:
+
+```apex
+// apex-mutant-disable-next-line conditional-boundary: i is never 0 here, the caller guarantees >= 1
+if (i < limit) { ... }
+
+Boolean alwaysOn = true; // apex-mutant-disable-line all: compile-time constant, switched at deploy time
+```
+
+- Scope is one operator ID or `all`; the reason is **mandatory** (at least 5 characters).
+  A marker with no reason, an unknown operator, or an unrecognized form suppresses
+  nothing and is reported as a problem — by `plan`, by `run`, in the report's findings,
+  and by `doctor` (which exits non-zero for it).
+- Markers are read from the parser's **comment tokens**, so a `//` inside a string
+  literal is a string, not a directive. A directive inside a `/* … */` block comment is
+  reported rather than honored: commenting code out is not the same as suppressing it.
+- A marker that matches no mutation (the code moved or changed) is reported as stale. It
+  hides nothing — but you thought it did, so you get told.
+- Suppressed mutants are **never validated** (they cost no org request), never scored,
+  and always listed — in `plan` output, `plan.json`, the report's `suppressions`, a
+  `suppressed` finding with its reason, and a `suppressed` count next to the score.
+- Suppression is applied before `--include`/`--exclude`/`--operators`/`--max-mutants`, so
+  narrowing a run can never resurrect a suppressed mutant.
 
 ## Execution safeguards recorded in every report
 

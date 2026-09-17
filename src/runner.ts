@@ -7,7 +7,7 @@ import { writeReport, assertOutputOutsidePackageDirs } from './report.js';
 import { assertWorkItems, writeExports, type ExportFormat } from './exports.js';
 import { TOOL_NAME, VERSION } from './version.js';
 import { ADVISORY_POLICY } from './types.js';
-import type { EnforcementPolicy, Mutation, Report, RunSafeguards, ValidationOptions, Validator, ExecutionResult, Outcome } from './types.js';
+import type { EnforcementPolicy, Mutation, Report, RunSafeguards, SuppressionRecord, ValidationOptions, Validator, ExecutionResult, Outcome } from './types.js';
 
 const VALID_OUTCOMES = new Set<Outcome>(['killed', 'survived', 'invalid', 'timeout', 'error']);
 
@@ -53,6 +53,8 @@ export interface RunOptions {
   workItems?: string[];
   runId?: string;
   safeguards?: SafeguardEvidence;
+  /** Mutants excluded by in-source markers, recorded so the exclusion is visible. */
+  suppressions?: SuppressionRecord;
   exports?: ExportFormat[];
 }
 
@@ -91,6 +93,10 @@ export async function runMutations(project: Project, mutations: Mutation[], opti
       orgCheck: options.safeguards?.orgCheck ?? null,
       sourceIntegrity: null,
       notes: [...(options.safeguards?.notes ?? [])],
+    },
+    suppressions: {
+      suppressed: [...(options.suppressions?.suppressed ?? [])],
+      problems: [...(options.suppressions?.problems ?? [])],
     },
     baseline: { outcome: 'error', message: 'Baseline has not completed.' },
     results: [], totalPlanned: mutations.length, complete: false,

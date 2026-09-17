@@ -226,8 +226,9 @@ GitHub issues (see `CONTRIBUTING.md`). There is no other support channel.
 | The report records the safeguards actually enforced (validator, org classification, snapshot isolation) and fails closed on anything it cannot attest | `test/runner.test.ts`, `test/cli.test.ts` | ✅ Verified offline |
 | Local Apex source is re-read after every run and proven byte-for-byte unchanged | `test/runner.test.ts` (unchanged, changed, and unverifiable cases) | ✅ Verified offline |
 | Exports (CSV/SARIF/Markdown) are well-formed, carry caller-supplied work items, and cannot execute in the tools that open them | `test/exports.test.ts`, `test/cli.test.ts` | ✅ Verified offline |
-| Full-run wall-clock runtime and run-to-run stability on a real codebase | — | ⏳ **Pending an authorized sandbox pilot** (readiness items 1 and 2; see `docs/REQUIREMENTS.md` G2/G3) |
-| Suppression of known-equivalent mutants | — | ❌ **Gap** — heuristic risk labels only today (`docs/REQUIREMENTS.md` G1) |
+| Equivalent mutants can be excluded, only with a stated reason, and never silently | `test/suppressions.test.ts`, `test/cli.test.ts` | ✅ Verified offline |
+| Two runs over unchanged source produce identical mutants, outcomes, and findings | `test/runner.test.ts` "two runs over unchanged source…" | ✅ Verified offline (tool-side determinism only; says nothing about a real org) |
+| Full-run wall-clock runtime, and stability of outcomes against a real org | — | ⏳ **Pending an authorized sandbox pilot** (readiness items 1 and 2; see `docs/REQUIREMENTS.md` G2/G3) |
 | `sf project deploy start --dry-run`'s actual JSON contract against a live org | — | ⏳ **Pending an authorized sandbox pilot** — no Salesforce org has been available during development |
 | The sandbox/scratch classification against a real authenticated org | — | ⏳ **Pending an authorized sandbox pilot** |
 | `run` end-to-end against a real org (baseline gate, mutant sequencing, report accuracy) | — | ⏳ **Pending an authorized sandbox pilot** |

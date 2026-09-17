@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildFindings, fileHotspots, operatorGuidance } from '../src/findings.js';
+import { OPERATOR_IDS } from '../src/mutations.js';
 import type { MutationResult, Report } from '../src/types.js';
 
 function mutation(overrides: Partial<MutationResult> = {}): MutationResult {
@@ -18,6 +19,7 @@ function report(overrides: Partial<Report> = {}): Report {
     policy: { mode: 'advisory', threshold: 0 },
     traceability: { runId: 'run-1', workItems: [] },
     safeguards: { validator: 'test', validationOnly: false, snapshotIsolated: true, orgCheck: null, sourceIntegrity: null, notes: [] },
+    suppressions: { suppressed: [], problems: [] },
     baseline: { outcome: 'survived', testsRun: 4 },
     results: [], totalPlanned: 0, complete: true, ...overrides,
   };
@@ -58,8 +60,7 @@ test('mutants with no test evidence are separated from real gaps and ranked belo
 });
 
 test('operator guidance covers every operator the planner emits, and unknown operators degrade honestly', () => {
-  for (const operator of ['equality-negation', 'boolean-literal', 'logical-connector', 'negation-removal',
-    'conditional-boundary', 'arithmetic', 'increment-decrement', 'unary-negation-removal']) {
+  for (const operator of OPERATOR_IDS) {
     const guidance = operatorGuidance(operator);
     assert.ok(guidance.behavior.length > 20, `${operator} needs an explanation of what a survivor means`);
     assert.ok(guidance.action.length > 20, `${operator} needs a suggested action`);

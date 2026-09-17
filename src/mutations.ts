@@ -10,6 +10,15 @@ import {
 } from '@apexdevtools/apex-parser';
 import type { Mutation } from './types.js';
 
+/** Every operator ID this engine can emit. Exported so suppression markers can be
+ * validated against it and so finding guidance can be checked for coverage, rather
+ * than either place keeping its own copy of the list. */
+export const OPERATOR_IDS = [
+  'conditional-boundary', 'equality-negation', 'logical-connector', 'boolean-literal',
+  'negation-removal', 'increment-decrement', 'unary-negation-removal', 'arithmetic',
+] as const;
+export type OperatorId = (typeof OPERATOR_IDS)[number];
+
 class SyntaxErrors extends ApexErrorListener {
   first?: { line: number; column: number };
   apexSyntaxError(line: number, column: number): void {

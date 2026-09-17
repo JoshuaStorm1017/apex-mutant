@@ -1,6 +1,6 @@
-import type { MutationResult, Report } from './types.js';
+import type { Mutation, MutationResult, Report, SuppressedMutation } from './types.js';
 
-export type FindingCategory = 'test-gap' | 'unproven-mutant' | 'run-quality';
+export type FindingCategory = 'test-gap' | 'unproven-mutant' | 'suppressed' | 'run-quality';
 export type FindingPriority = 'high' | 'medium' | 'low';
 /** How plausible it is that a surviving mutant of this operator class is behaviorally
  * equivalent to the original (i.e. no test could ever kill it). A heuristic about the
@@ -98,8 +98,8 @@ export function operatorGuidance(operator: string): OperatorGuidance {
   return OPERATOR_GUIDANCE[operator] ?? UNKNOWN_OPERATOR;
 }
 
-const location = (result: MutationResult) => `${result.file}:${result.line}:${result.column}`;
-const change = (result: MutationResult) => `${result.original.trim() || '(empty)'} → ${result.replacement.trim() || '(removed)'}`;
+const location = (mutation: Mutation) => `${mutation.file}:${mutation.line}:${mutation.column}`;
+const change = (mutation: Mutation) => `${mutation.original.trim() || '(empty)'} → ${mutation.replacement.trim() || '(removed)'}`;
 
 const PRIORITY_ORDER: Record<FindingPriority, number> = { high: 0, medium: 1, low: 2 };
 
@@ -131,6 +131,17 @@ function unprovenMutant(result: MutationResult): Finding {
   };
 }
 
+function suppressedFinding(mutation: SuppressedMutation): Finding {
+  return {
+    id: mutation.id, category: 'suppressed', priority: 'low', equivalenceRisk: 'unknown',
+    file: mutation.file, line: mutation.line, column: mutation.column, operator: mutation.operator,
+    change: change(mutation),
+    title: `Suppressed ${mutation.operator} mutant at ${location(mutation)}`,
+    detail: `This mutant was never validated because line ${mutation.markerLine} of ${mutation.file} suppresses it: "${mutation.reason}". It is excluded from the score's denominator.`,
+    suggestedAction: 'Re-check this reason whenever the surrounding logic changes. A suppression that outlives its justification quietly caps the score with no evidence behind it.',
+  };
+}
+
 function runQuality(id: string, title: string, detail: string, action: string, priority: FindingPriority = 'high'): Finding {
   return {
     id, category: 'run-quality', priority, equivalenceRisk: 'unknown',
@@ -158,6 +169,16 @@ export function buildFindings(report: Report): Finding[] {
   for (const result of report.results) {
     if (result.outcome === 'survived') findings.push(testGap(result));
     else if (result.outcome !== 'killed') findings.push(unprovenMutant(result));
+  }
+  for (const mutation of report.suppressions.suppressed) findings.push(suppressedFinding(mutation));
+  for (const [index, problem] of report.suppressions.problems.entries()) {
+    findings.push(runQuality(
+      `suppression-problem-${index}`,
+      `Suppression marker problem in ${problem.file}:${problem.line}`,
+      `${problem.message} Nothing was suppressed by it, so no mutant is hidden — but the marker is not doing what its author expects.`,
+      'Fix or remove the marker so the file says what it means.',
+      'medium',
+    ));
   }
   if (!report.complete) {
     findings.push(runQuality(
