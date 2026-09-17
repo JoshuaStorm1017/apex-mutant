@@ -5,3 +5,7 @@ export * from './report.js';
 export * from './runner.js';
 export * from './salesforce.js';
 export * from './orgSafety.js';
+export * from './findings.js';
+export * from './policy.js';
+export * from './exports.js';
+export * from './version.js';

@@ -16,11 +16,19 @@ function mutation(overrides: Partial<MutationResult> = {}): MutationResult {
 
 function report(overrides: Partial<Report> = {}): Report {
   return {
-    schemaVersion: 1, createdAt: '2026-01-01T00:00:00.000Z',
+    schemaVersion: 2, createdAt: '2026-01-01T00:00:00.000Z',
+    tool: { name: 'apex-mutant', version: 'test' },
+    policy: { mode: 'advisory', threshold: 0 },
+    traceability: { runId: 'run-1', workItems: [] },
+    safeguards: {
+      validator: 'test validator', validationOnly: false, snapshotIsolated: true,
+      orgCheck: null, sourceIntegrity: null, notes: [],
+    },
     baseline: { outcome: 'survived', testsRun: 3 },
     results: [], totalPlanned: 0, complete: false, ...overrides,
   };
 }
+const enforcing = (threshold: number): Report['policy'] => ({ mode: 'enforce', threshold });
 
 test('summarize counts each outcome and reports score as null with no scored mutants', () => {
   const r = report({ results: [mutation({ outcome: 'killed' }), mutation({ outcome: 'survived' }), mutation({ outcome: 'invalid' }), mutation({ outcome: 'timeout' }), mutation({ outcome: 'error' })] });
@@ -181,7 +189,8 @@ test('reportExitCode: 2 for incomplete, failed baseline, unresolved error/timeou
   assert.equal(reportExitCode(report({ results: [killed, mutation({ outcome: 'timeout' })], complete: true })), 2, 'unresolved timeout present');
   assert.equal(reportExitCode(report({ results: [mutation({ outcome: 'invalid' })], complete: true })), 2, 'no scored mutants at all');
 
-  assert.equal(reportExitCode(report({ results: [survived, survived, killed], complete: true }), 50), 1, 'below threshold');
-  assert.equal(reportExitCode(report({ results: [survived, survived, killed], complete: true }), 33), 0, 'meets threshold');
+  assert.equal(reportExitCode(report({ results: [survived, survived, killed], complete: true, policy: enforcing(50) })), 1, 'below threshold in enforce mode');
+  assert.equal(reportExitCode(report({ results: [survived, survived, killed], complete: true, policy: enforcing(33) })), 0, 'meets threshold in enforce mode');
+  assert.equal(reportExitCode(report({ results: [survived, survived, killed], complete: true })), 0, 'advisory mode never gates on the score');
   assert.equal(reportExitCode(report({ results: [killed, killed], complete: true })), 0, '100% score with default threshold');
 });

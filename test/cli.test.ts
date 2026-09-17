@@ -138,7 +138,7 @@ test('numeric options are validated before any filesystem or network work', asyn
   try {
     await assert.rejects(main(['plan', '--project', root, '--wait', '0']), /--wait must be between/);
     await assert.rejects(main(['plan', '--project', root, '--timeout', 'not-a-number']), /--timeout must be between/);
-    await assert.rejects(main(['run', '--project', root, '--target-org', 'x', '--tests', 'T', '--threshold', '150']), /--threshold must be between/);
+    await assert.rejects(main(['run', '--project', root, '--target-org', 'x', '--tests', 'T', '--enforce', '--threshold', '150']), /--threshold must be between/);
     await assert.rejects(main(['plan', '--project', root, '--max-mutants', '1.5']), /--max-mutants must be an integer/);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -175,17 +175,30 @@ test('run with an injected validator never touches a real Salesforce CLI and rep
   }
 });
 
-test('run below the requested threshold exits 1 and above it exits 0', async () => {
+test('the score only gates the exit code under --enforce, and both flags must be explicit', async () => {
   const root = await fixtureProject();
   try {
     const survivedOnly: Validator = async () => ({ outcome: 'survived', testsRun: 1 });
-    const below = await capture(() => main(['run', '--project', root, '--target-org', 'scratch', '--tests', 'FooTest', '--output', join(root, 'out1'), '--threshold', '10'], survivedOnly, scratchClassifier));
-    assert.equal(below.exitCode, 1);
-
     let call = 0;
     const allKilled: Validator = async () => (call++ === 0 ? { outcome: 'survived', testsRun: 1 } : { outcome: 'killed', testsRun: 1 });
-    const above = await capture(() => main(['run', '--project', root, '--target-org', 'scratch', '--tests', 'FooTest', '--output', join(root, 'out2'), '--threshold', '10'], allKilled, scratchClassifier));
+
+    // Advisory is the default: a 0% score is reported, not enforced.
+    const advisory = await capture(() => main(['run', '--project', root, '--target-org', 'scratch', '--tests', 'FooTest', '--output', join(root, 'out0')], survivedOnly, scratchClassifier));
+    assert.equal(advisory.exitCode, 0, 'a 0% score must not fail an advisory run');
+    assert.ok(advisory.logs.some((l) => l.includes('Advisory run')), 'the advisory notice is printed');
+
+    const below = await capture(() => main(['run', '--project', root, '--target-org', 'scratch', '--tests', 'FooTest', '--output', join(root, 'out1'), '--enforce', '--threshold', '10'], survivedOnly, scratchClassifier));
+    assert.equal(below.exitCode, 1);
+    assert.ok(below.logs.some((l) => l.includes('Enforcing run')));
+
+    call = 0;
+    const above = await capture(() => main(['run', '--project', root, '--target-org', 'scratch', '--tests', 'FooTest', '--output', join(root, 'out2'), '--enforce', '--threshold', '10'], allKilled, scratchClassifier));
     assert.equal(above.exitCode, 0);
+
+    // Neither half of the gate may be implied: a threshold alone would silently do
+    // nothing, and --enforce alone would invent a threshold nobody chose.
+    await assert.rejects(main(['run', '--project', root, '--target-org', 'scratch', '--tests', 'FooTest', '--threshold', '10'], survivedOnly, scratchClassifier), /--threshold only affects the exit code together with --enforce/);
+    await assert.rejects(main(['run', '--project', root, '--target-org', 'scratch', '--tests', 'FooTest', '--enforce'], survivedOnly, scratchClassifier), /--enforce requires an explicit --threshold/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -317,6 +330,79 @@ test('doctor with --target-org reports the classification and flags a non-sandbo
     assert.equal(report.healthy, false);
     assert.equal(exitCode, 1);
     assert.ok(report.problems.some((p: string) => p.includes('run would refuse')));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('run prints the advisory notice and the highest-priority findings with their suggested actions', async () => {
+  const root = await fixtureProject();
+  try {
+    const validator: Validator = async () => ({ outcome: 'survived', testsRun: 2 });
+    const { logs } = await capture(() => main(['run', '--project', root, '--target-org', 'scratch', '--tests', 'FooTest', '--output', join(root, 'out')], validator, scratchClassifier));
+    const text = logs.join('\n');
+    assert.ok(text.includes('Advisory run'), 'the operating mode is stated in the output, not just in the docs');
+    assert.ok(text.includes('does not affect the exit code'));
+    assert.ok(/Top findings \(\d+ total/.test(text));
+    assert.ok(text.includes('[high] Unkilled boolean-literal mutant'));
+    assert.ok(text.includes('Assert the behavior this flag controls'), 'a suggested action, not just a count');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('run records the org classification it enforced, and refuses to call an injected validator validation-only', async () => {
+  const root = await fixtureProject();
+  const output = join(root, 'out');
+  try {
+    const validator: Validator = async () => ({ outcome: 'survived', testsRun: 2 });
+    await capture(() => main(['run', '--project', root, '--target-org', 'scratch', '--tests', 'FooTest', '--output', output], validator, scratchClassifier));
+    const report = JSON.parse(await readFile(join(output, 'report.json'), 'utf8'));
+    assert.deepEqual(report.safeguards.orgCheck, { targetOrg: 'scratch', classification: 'scratch', message: 'test fixture' });
+    assert.equal(report.safeguards.validationOnly, false, 'only the built-in validator path may claim validation-only');
+    assert.equal(report.safeguards.snapshotIsolated, true);
+    assert.equal(report.safeguards.sourceIntegrity.verified, true);
+    assert.equal(report.safeguards.sourceIntegrity.unchanged, true);
+    const html = await readFile(join(output, 'report.html'), 'utf8');
+    assert.ok(html.includes('Execution safeguards'));
+    assert.ok(html.includes('Before enforcing a score in CI'));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('--export and --work-item produce portable artifacts carrying the work item, and bad values are rejected', async () => {
+  const root = await fixtureProject();
+  const output = join(root, 'out');
+  try {
+    const validator: Validator = async () => ({ outcome: 'survived', testsRun: 2 });
+    const { logs } = await capture(() => main(['run', '--project', root, '--target-org', 'scratch', '--tests', 'FooTest',
+      '--output', output, '--export', 'all', '--work-item', 'ABC-123', '--work-item', 'release/2026.1'], validator, scratchClassifier));
+    const csv = await readFile(join(output, 'findings.csv'), 'utf8');
+    const sarif = JSON.parse(await readFile(join(output, 'report.sarif'), 'utf8'));
+    const markdown = await readFile(join(output, 'summary.md'), 'utf8');
+    assert.ok(csv.includes('"ABC-123 release/2026.1"'));
+    assert.deepEqual(sarif.runs[0].properties.workItems, ['ABC-123', 'release/2026.1']);
+    assert.ok(markdown.includes('ABC-123, release/2026.1'));
+    assert.ok(logs.some((l) => l.includes('Export (csv)')));
+
+    await assert.rejects(main(['run', '--project', root, '--target-org', 'scratch', '--tests', 'FooTest', '--output', output, '--export', 'pdf'], validator, scratchClassifier), /Unknown export format 'pdf'/);
+    await assert.rejects(main(['run', '--project', root, '--target-org', 'scratch', '--tests', 'FooTest', '--output', output, '--work-item', '=cmd'], validator, scratchClassifier), /Invalid work item/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('run --json prints the findings alongside the report so a pipeline never has to re-derive them', async () => {
+  const root = await fixtureProject();
+  try {
+    const validator: Validator = async () => ({ outcome: 'survived', testsRun: 2 });
+    const { logs } = await capture(() => main(['run', '--project', root, '--target-org', 'scratch', '--tests', 'FooTest', '--output', join(root, 'out'), '--json'], validator, scratchClassifier));
+    const printed = JSON.parse(logs.join('\n'));
+    assert.equal(printed.policy.mode, 'advisory');
+    assert.equal(printed.schemaVersion, 2);
+    assert.ok(printed.findings.length >= 1);
+    assert.ok(printed.findings.every((f: { suggestedAction: string }) => f.suggestedAction.length > 0));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

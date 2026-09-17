@@ -220,3 +220,145 @@ test('an unexpectedly rejecting validator is classified as an error, never silen
   assert.equal(report.results[0].outcome, 'error');
   assert.equal(report.complete, false);
 });
+
+test('a run records advisory mode, traceability, and un-attested validator evidence by default', async () => {
+  const p = project({ 'force-app/A.cls': SOURCE_A });
+  const mutations = generateMutations(SOURCE_A, 'force-app/A.cls').slice(0, 1);
+  const output = await mkdtemp(join(tmpdir(), 'apex-mutant-evidence-'));
+  try {
+    const validator: Validator = async () => ({ outcome: 'survived', testsRun: 2 });
+    const report = await runMutations(p, mutations, baseOptions({ output, workItems: ['ABC-1'] }), validator);
+    assert.equal(report.schemaVersion, 2);
+    assert.equal(report.policy.mode, 'advisory', 'advisory is the default operating mode');
+    assert.deepEqual(report.traceability.workItems, ['ABC-1']);
+    assert.ok(report.traceability.runId.length > 0);
+    assert.equal(report.safeguards.snapshotIsolated, true);
+    // A caller-supplied validator is arbitrary code: the report must not claim it was validation-only.
+    assert.equal(report.safeguards.validationOnly, false);
+    assert.match(report.safeguards.validator, /cannot attest/);
+    assert.equal(report.safeguards.orgCheck, null);
+    const written = JSON.parse(await readFile(join(output, 'report.json'), 'utf8'));
+    assert.equal(written.policy.mode, 'advisory');
+    assert.ok(Array.isArray(written.findings), 'report.json carries derived findings');
+    assert.ok(Array.isArray(written.hotspots));
+    assert.ok(Array.isArray(written.enforcementReadiness));
+  } finally {
+    await rm(output, { recursive: true, force: true });
+  }
+});
+
+test('caller-supplied safeguard evidence is recorded verbatim, and only an explicit true claims validation-only', async () => {
+  const p = project({ 'force-app/A.cls': SOURCE_A });
+  const mutations = generateMutations(SOURCE_A, 'force-app/A.cls').slice(0, 1);
+  const output = await mkdtemp(join(tmpdir(), 'apex-mutant-evidence2-'));
+  try {
+    const validator: Validator = async () => ({ outcome: 'survived', testsRun: 2 });
+    const report = await runMutations(p, mutations, baseOptions({
+      output,
+      safeguards: {
+        validator: 'built-in validator', validationOnly: true,
+        orgCheck: { targetOrg: 'scratch', classification: 'scratch', message: 'scratch org' },
+        notes: ['pilot run'],
+      },
+    }), validator);
+    assert.equal(report.safeguards.validationOnly, true);
+    assert.equal(report.safeguards.validator, 'built-in validator');
+    assert.equal(report.safeguards.orgCheck?.classification, 'scratch');
+    assert.deepEqual(report.safeguards.notes, ['pilot run']);
+  } finally {
+    await rm(output, { recursive: true, force: true });
+  }
+});
+
+test('source integrity is verified against the real project files and reported as unproven when it cannot be', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'apex-mutant-integrity-'));
+  const output = await mkdtemp(join(tmpdir(), 'apex-mutant-integrity-out-'));
+  try {
+    await mkdir(join(root, 'force-app'), { recursive: true });
+    await writeFile(join(root, 'force-app', 'A.cls'), SOURCE_A);
+    const onDisk: Project = { root, packageDirs: ['force-app'], files: new Map([['force-app/A.cls', SOURCE_A]]), config: {} };
+    const mutations = generateMutations(SOURCE_A, 'force-app/A.cls').slice(0, 1);
+    const validator: Validator = async () => ({ outcome: 'survived', testsRun: 2 });
+    const report = await runMutations(onDisk, mutations, baseOptions({ output }), validator);
+    assert.deepEqual(report.safeguards.sourceIntegrity, {
+      verified: true, unchanged: true, filesChecked: 1, changedFiles: [],
+      message: 'All 1 file(s) are byte-for-byte identical to what apex-mutant read before the run.',
+    });
+
+    // An in-memory project has nothing on disk to compare: that is 'unproven', never 'unchanged'.
+    const virtual = await runMutations(project({ 'force-app/A.cls': SOURCE_A }), mutations, baseOptions({ output }), validator);
+    assert.equal(virtual.safeguards.sourceIntegrity?.verified, false);
+    assert.equal(virtual.safeguards.sourceIntegrity?.unchanged, false);
+    assert.match(virtual.safeguards.sourceIntegrity!.message, /could not be re-read/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(output, { recursive: true, force: true });
+  }
+});
+
+test('source integrity reports local files that changed during the run instead of assuming isolation held', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'apex-mutant-integrity-changed-'));
+  const output = await mkdtemp(join(tmpdir(), 'apex-mutant-integrity-changed-out-'));
+  try {
+    await mkdir(join(root, 'force-app'), { recursive: true });
+    await writeFile(join(root, 'force-app', 'A.cls'), SOURCE_A);
+    const onDisk: Project = { root, packageDirs: ['force-app'], files: new Map([['force-app/A.cls', SOURCE_A]]), config: {} };
+    const mutations = generateMutations(SOURCE_A, 'force-app/A.cls').slice(0, 1);
+    // Something outside apex-mutant edits the developer's source mid-run.
+    const validator: Validator = async () => {
+      await writeFile(join(root, 'force-app', 'A.cls'), SOURCE_B);
+      return { outcome: 'survived', testsRun: 2 };
+    };
+    const report = await runMutations(onDisk, mutations, baseOptions({ output }), validator);
+    assert.equal(report.safeguards.sourceIntegrity?.verified, true);
+    assert.equal(report.safeguards.sourceIntegrity?.unchanged, false);
+    assert.deepEqual(report.safeguards.sourceIntegrity?.changedFiles, ['force-app/A.cls']);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(output, { recursive: true, force: true });
+  }
+});
+
+test('runMutations rejects an invalid policy or work item before doing any work', async () => {
+  const p = project({ 'force-app/A.cls': SOURCE_A });
+  const mutations = generateMutations(SOURCE_A, 'force-app/A.cls');
+  let calls = 0;
+  const validator: Validator = async () => { calls++; return { outcome: 'survived', testsRun: 1 }; };
+  await assert.rejects(runMutations(p, mutations, baseOptions({ policy: { mode: 'enforce', threshold: 101 } }), validator), /threshold between 0 and 100/);
+  await assert.rejects(runMutations(p, mutations, baseOptions({ policy: { mode: 'gate' as unknown as 'enforce', threshold: 10 } }), validator), /advisory' or 'enforce/);
+  await assert.rejects(runMutations(p, mutations, baseOptions({ workItems: ['=danger'] }), validator), /Invalid work item/);
+  assert.equal(calls, 0, 'nothing is validated before the options are accepted');
+});
+
+test('requested exports are written once the run finishes, alongside the incremental report', async () => {
+  const p = project({ 'force-app/A.cls': SOURCE_A });
+  const mutations = generateMutations(SOURCE_A, 'force-app/A.cls').slice(0, 1);
+  const output = await mkdtemp(join(tmpdir(), 'apex-mutant-exports-run-'));
+  try {
+    const validator: Validator = async () => ({ outcome: 'survived', testsRun: 2 });
+    await runMutations(p, mutations, baseOptions({ output, exports: ['csv', 'sarif', 'md'], workItems: ['ABC-9'] }), validator);
+    const csv = await readFile(join(output, 'findings.csv'), 'utf8');
+    const sarif = JSON.parse(await readFile(join(output, 'report.sarif'), 'utf8'));
+    const markdown = await readFile(join(output, 'summary.md'), 'utf8');
+    assert.ok(csv.includes('ABC-9'));
+    assert.equal(sarif.version, '2.1.0');
+    assert.ok(markdown.includes('ABC-9'));
+  } finally {
+    await rm(output, { recursive: true, force: true });
+  }
+});
+
+test('exports are still written when the baseline never passes, so a failed run is reportable too', async () => {
+  const p = project({ 'force-app/A.cls': SOURCE_A });
+  const mutations = generateMutations(SOURCE_A, 'force-app/A.cls').slice(0, 1);
+  const output = await mkdtemp(join(tmpdir(), 'apex-mutant-exports-baseline-'));
+  try {
+    const validator: Validator = async () => ({ outcome: 'error', message: 'no CLI' });
+    const report = await runMutations(p, mutations, baseOptions({ output, exports: ['md'] }), validator);
+    assert.equal(report.results.length, 0);
+    const markdown = await readFile(join(output, 'summary.md'), 'utf8');
+    assert.ok(markdown.includes('Baseline validation did not pass'));
+  } finally {
+    await rm(output, { recursive: true, force: true });
+  }
+});

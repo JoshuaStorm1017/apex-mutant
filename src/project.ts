@@ -2,7 +2,7 @@ import { lstat, readdir, readFile, mkdir, writeFile, mkdtemp, rm } from 'node:fs
 import { resolve, relative, join, isAbsolute, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { generateMutations } from './mutations.js';
-import type { Mutation } from './types.js';
+import type { Mutation, SourceIntegrity } from './types.js';
 
 export interface Project {
   root: string;
@@ -114,4 +114,41 @@ export async function snapshotProject(project: Project): Promise<{ directory: st
     await rm(directory, { recursive: true, force: true });
     throw error;
   }
+}
+
+/** Re-read every file apex-mutant loaded and compare it byte-for-byte with what it
+ * read before the run. Mutants are only ever written into the temporary snapshot, so
+ * this is the evidence for that claim rather than a restatement of it: if anything in
+ * the local package directories differs afterwards, the report says so.
+ *
+ * `verified: false` means the check could not be completed (an in-memory Project with
+ * no files on disk, an unreadable file, an unsafe path) — never that the source is
+ * unchanged. It deliberately reads only the paths already in the snapshot, so a file
+ * added by something else during the run is out of scope and not reported. */
+export async function verifySourceIntegrity(project: Project): Promise<SourceIntegrity> {
+  const changedFiles: string[] = [];
+  const unreadable: string[] = [];
+  let checked = 0;
+  for (const [file, content] of project.files) {
+    try {
+      assertSafeRelativePath(file);
+      const current = await readFile(join(project.root, file), 'utf8');
+      checked++;
+      if (current !== content) changedFiles.push(file);
+    } catch {
+      unreadable.push(file);
+    }
+  }
+  if (unreadable.length) {
+    return {
+      verified: false, unchanged: false, filesChecked: checked, changedFiles,
+      message: `${unreadable.length} of ${project.files.size} file(s) could not be re-read from ${project.root}; integrity is unproven either way.`,
+    };
+  }
+  return {
+    verified: true, unchanged: changedFiles.length === 0, filesChecked: checked, changedFiles,
+    message: changedFiles.length
+      ? `${changedFiles.length} file(s) differ from what apex-mutant read before the run: ${changedFiles.slice(0, 5).join(', ')}${changedFiles.length > 5 ? ', …' : ''}.`
+      : `All ${checked} file(s) are byte-for-byte identical to what apex-mutant read before the run.`,
+  };
 }

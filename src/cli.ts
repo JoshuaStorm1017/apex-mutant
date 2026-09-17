@@ -9,7 +9,11 @@ import { runMutations } from './runner.js';
 import { validateWithSalesforce } from './salesforce.js';
 import { classifyTargetOrg, assertSandboxOrScratch } from './orgSafety.js';
 import { summarize, reportExitCode, assertOutputOutsidePackageDirs, writeFileAtomic } from './report.js';
-import type { Validator, OrgClassifier } from './types.js';
+import { buildFindings } from './findings.js';
+import { advisoryNotice } from './policy.js';
+import { EXPORT_FILENAMES, assertWorkItems, parseExportFormats } from './exports.js';
+import { TOOL_NAME, VERSION } from './version.js';
+import type { Validator, OrgClassifier, EnforcementPolicy } from './types.js';
 
 const help = `Apex Mutant — mutation testing for Salesforce Apex
 
@@ -36,15 +40,23 @@ Options:
   --tests <names>           Test class names, comma-separated or repeatable
   --wait <minutes>          Salesforce wait per validation (default: 10)
   --timeout <seconds>       Hard process timeout per validation (default: 660)
-  --threshold <percent>     Fail below mutation score (default: 0)
+  --enforce                 Opt in to gating: exit 1 when the score is below
+                            --threshold. Off by default (advisory reporting).
+  --threshold <percent>     Score to gate on; only meaningful with --enforce
+  --export <formats>        Also write csv, sarif, md (comma-separated, or all)
+  --work-item <id>          Identifier recorded in every export; repeatable
   --help                    Show this help
 
+Reporting is advisory by default: the mutation score never changes the exit code
+unless you pass --enforce with a --threshold you chose deliberately.
 Source is never edited; run sends Apex-only snapshots via --dry-run.
 Existing non-Apex dependencies must already be installed in the target org.
 run only proceeds against an org the Salesforce CLI itself classifies as a
 sandbox or scratch org (via \`sf org list auth\`); there is no override flag.
 See README for validation limitations, including native-Windows support.
-Exit codes: 0 success, 1 below threshold, 2 incomplete/error/no score.
+Exit codes: 0 run produced a readable result, 1 below --threshold (only with
+--enforce), 2 the run produced no readable result (failed baseline, incomplete
+run, environment error, or nothing scored), 130 interrupted.
 `;
 
 function numberOption(value: string | undefined, fallback: number, name: string, min = 1, max = Number.MAX_SAFE_INTEGER): number {
@@ -167,6 +179,8 @@ export async function main(argv: string[] = process.argv.slice(2), validate: Val
     operators: { type: 'string' }, 'max-mutants': { type: 'string' }, output: { type: 'string' },
     'target-org': { type: 'string' }, tests: { type: 'string', multiple: true },
     wait: { type: 'string' }, timeout: { type: 'string' }, threshold: { type: 'string' },
+    enforce: { type: 'boolean' }, export: { type: 'string', multiple: true },
+    'work-item': { type: 'string', multiple: true },
   } });
   if (values.help || !positionals.length) { console.log(help); return; }
   const [command] = positionals;
@@ -184,7 +198,19 @@ export async function main(argv: string[] = process.argv.slice(2), validate: Val
   const waitMinutes = numberOption(values.wait, 10, '--wait', 1, 1440);
   if (!Number.isInteger(waitMinutes)) throw new Error('--wait must be an integer.');
   const timeoutMs = numberOption(values.timeout, 660, '--timeout', 1, 86400) * 1000;
-  const threshold = numberOption(values.threshold, 0, '--threshold', 0, 100);
+  // Advisory-first, made explicit: a threshold on its own is a no-op the caller
+  // probably did not intend, and enforcement without a chosen threshold is a gate
+  // nobody picked. Both are rejected rather than silently resolved.
+  if (values.threshold !== undefined && !values.enforce) {
+    throw new Error('--threshold only affects the exit code together with --enforce. Reporting is advisory by default: drop --threshold, or add --enforce to gate on the score.');
+  }
+  if (values.enforce && values.threshold === undefined) throw new Error('--enforce requires an explicit --threshold.');
+  const policy: EnforcementPolicy = values.enforce
+    ? { mode: 'enforce', threshold: numberOption(values.threshold, 0, '--threshold', 0, 100) }
+    : { mode: 'advisory', threshold: 0 };
+  const exportFormats = parseExportFormats(values.export ?? []);
+  const workItems = (values['work-item'] ?? []).map((value) => value.trim()).filter(Boolean);
+  assertWorkItems(workItems);
   if (command === 'run' && process.platform === 'win32') {
     throw new Error("run is not supported on native Windows: Node cannot safely spawn the Salesforce CLI's sf.cmd shim with shell:false. Use WSL, macOS, or Linux instead. `plan` and `doctor` work natively on Windows.");
   }
@@ -213,7 +239,11 @@ export async function main(argv: string[] = process.argv.slice(2), validate: Val
   const tests = (values.tests ?? []).flatMap((value) => value.split(',')).map((value) => value.trim()).filter(Boolean);
   if (!values['target-org']?.trim() || !tests.length) throw new Error('run requires --target-org and --tests. Use plan for offline generation.');
   // The genuine guard: checked before any mutant source is sent, with no override.
-  assertSandboxOrScratch(await classifyOrg(values['target-org']), values['target-org']);
+  const orgCheck = await classifyOrg(values['target-org']);
+  assertSandboxOrScratch(orgCheck, values['target-org']);
+  // Only the built-in path is constrained to validation-only by apex-mutant itself;
+  // an injected validator is recorded as un-attested rather than assumed safe.
+  const builtIn = validate === validateWithSalesforce;
   const abort = new AbortController();
   const cancel = () => { console.error('Stopping; preserving completed results.'); abort.abort(); };
   process.once('SIGINT', cancel); process.once('SIGTERM', cancel);
@@ -221,17 +251,35 @@ export async function main(argv: string[] = process.argv.slice(2), validate: Val
     console.error(`Validating baseline, then up to ${mutations.length} mutants. Every request uses --dry-run.`);
     const report = await runMutations(project, mutations, {
       targetOrg: values['target-org'], tests, waitMinutes, timeoutMs, output, signal: abort.signal,
+      policy, workItems, exports: exportFormats,
+      safeguards: {
+        validator: builtIn
+          ? `${TOOL_NAME} ${VERSION} built-in Salesforce validator (sf project deploy start --dry-run --test-level RunSpecifiedTests)`
+          : 'Caller-supplied validator: apex-mutant cannot attest what it sends to the org.',
+        validationOnly: builtIn,
+        orgCheck: { targetOrg: values['target-org'], ...orgCheck },
+      },
       onProgress: (done, total, result) => console.error(`[${done}/${total}] ${result.outcome}`),
     }, validate);
     const summary = summarize(report);
-    if (values.json) console.log(JSON.stringify({ ...report, summary }, null, 2));
+    const findings = buildFindings(report);
+    if (values.json) console.log(JSON.stringify({ ...report, summary, findings }, null, 2));
     else {
       console.log(`Baseline: ${report.baseline.outcome}${report.baseline.message ? ` — ${report.baseline.message}` : ''}`);
       console.log(`Mutation score: ${summary.score === null ? 'N/A' : summary.score.toFixed(1) + '%'}`);
       console.log(`Killed ${summary.killed} · survived ${summary.survived} · invalid ${summary.invalid} · timeout ${summary.timeout} · error ${summary.error}`);
-      console.log(`Report: ${join(output, 'report.html')}`);
+      console.log(advisoryNotice(report.policy));
+      if (findings.length) {
+        console.log(`\nTop findings (${findings.length} total, all of them in the report):`);
+        for (const finding of findings.slice(0, 3)) {
+          console.log(`  [${finding.priority}] ${finding.title}`);
+          console.log(`      ${finding.suggestedAction}`);
+        }
+      }
+      console.log(`\nReport: ${join(output, 'report.html')}`);
+      for (const format of exportFormats) console.log(`Export (${format}): ${join(output, EXPORT_FILENAMES[format])}`);
     }
-    process.exitCode = abort.signal.aborted ? 130 : reportExitCode(report, threshold);
+    process.exitCode = abort.signal.aborted ? 130 : reportExitCode(report);
   } finally { process.removeListener('SIGINT', cancel); process.removeListener('SIGTERM', cancel); }
 }
 
