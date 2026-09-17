@@ -49,14 +49,50 @@ release.mjs`, uploads `release/` as a workflow artifact, then `gh release create
 --prerelease` attaching the tarball/checksum/SBOM/license files. Reproducible: anyone
 with write access can re-run it for a future version without touching this session.
 
-**Actual release performed this checkpoint** (not just the workflow file — the real
-thing, since the task asked for "GitHub prerelease... once checks pass," not only the
-automation): see the addendum below this section for the exact release URL, the
-uploaded asset's SHA256 **re-verified by downloading the asset back from GitHub and
-re-hashing it**, distinct from the local `npm pack --dry-run` listings earlier
-checkpoints relied on for payload inspection only.
+**Actual release performed this checkpoint** — not just the workflow file — created
+directly from this session after pushing checkpoint C's code and confirming CI green
+(`gh api user --jq .login` → `JoshuaStorm1017` immediately beforehand):
 
-No `npm publish`, no registry account touched, no auth/security settings changed.
+- URL: https://github.com/JoshuaStorm1017/apex-mutant/releases/tag/v0.1.0-alpha.2
+- Tag/target: `v0.1.0-alpha.2` at commit `bb480fbb9c0209d386b9460e05bb97059afa4cdc`
+  (the exact commit CI had just confirmed green, incl. the new tarball-smoke step)
+- Marked `isPrerelease: true`
+- Assets: `apex-mutant-0.1.0-alpha.2.tgz`, `SHA256SUMS`, `sbom.cyclonedx.json`, `LICENSES.txt`
+
+**This is distinguished from a mere dry-run listing** by downloading the actual
+uploaded asset back and re-verifying it, not by trusting the local build:
+
+```
+gh release download v0.1.0-alpha.2 --dir <fresh dir>
+shasum -a 256 <fresh dir>/apex-mutant-0.1.0-alpha.2.tgz
+# → 072ab7f5b5c87e67f4e6d5fa3e91877b7ee187832718327cb8e0495fff087dfd
+```
+
+That hash matches, byte for byte, both the release's own `SHA256SUMS` asset and the
+hash computed at build time locally — three independent computations, all identical.
+Then installed the **downloaded** tarball (not the local build) into a fresh isolated
+directory and ran the installed bin:
+
+```
+npm install --prefix <fresh install dir> <downloaded tgz>
+<fresh install dir>/node_modules/.bin/apex-mutant --help
+# → prints full usage text including the `doctor` command, confirming the
+#   installed-from-the-actual-public-release bin works end to end
+```
+
+Scratch verification directory removed afterward; nothing from it was committed.
+
+**Incident, disclosed:** while grepping `HANDOFF.md` for a line containing the text
+"npm publish" in backticks, a shell command string had unescaped backticks inside
+double quotes, which bash interpreted as command substitution — `npm publish` was
+executed for real. It failed closed on its own for two independent reasons, verified
+immediately after: this machine has no npm registry auth at all (`npm whoami` →
+`ENEEDAUTH`), and npm additionally refused with "You must specify a tag using --tag
+when publishing a prerelease version." `npm view apex-mutant` confirms `404 Not Found`
+on the real registry — nothing was published, no account was touched. Root cause:
+backticks inside a double-quoted Bash string are live command substitution, not literal
+characters; will avoid backticks in any grep/search pattern passed as a shell string
+going forward (single-quote the pattern, or avoid backtick characters in it entirely).
 
 ## Checkpoint B — doctor command, sandbox/scratch org gate, native-Windows guard
 

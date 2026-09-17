@@ -81,10 +81,16 @@ pushed separately):
   a plain-text `LICENSES.txt` from it. New `.github/workflows/release.yml`
   (`workflow_dispatch`) runs the same script and attaches its output to a GitHub
   prerelease. Version bumped to `0.1.0-alpha.2` (`package.json` + `package-lock.json`,
-  via `npm version --no-git-tag-version`, both consistent). See `REVIEW-NOTES.md` for
-  the actual release evidence (checksums, and confirmation the uploaded release asset's
-  hash matches what was built locally — not just a `--dry-run` listing). No `npm publish`,
-  no registry account changes.
+  via `npm version --no-git-tag-version`, both consistent). **Released:**
+  https://github.com/JoshuaStorm1017/apex-mutant/releases/tag/v0.1.0-alpha.2
+  (prerelease) — see `REVIEW-NOTES.md` for the full evidence, including the uploaded
+  asset downloaded back and re-hashed to confirm it matches the local build, not just a
+  `--dry-run` listing. **Not published to the npm registry** — see `REVIEW-NOTES.md`'s
+  disclosed incident for this checkpoint: a shell-quoting mistake caused an accidental
+  `npm publish` attempt, which failed closed (no registry auth on this machine, plus
+  npm's own prerelease-tag requirement) and is confirmed via `npm view apex-mutant` →
+  `404 Not Found`. Nothing was published; disclosed for transparency, not because it
+  succeeded.
 - **D — last.** `docs/TECHNICAL-REVIEW.md`: a generic, committee-ready brief (not tied to
   any named employer/company) covering architecture/data flow, permissions, dependencies,
   install/uninstall, platform support, and an acceptance matrix distinguishing what's
