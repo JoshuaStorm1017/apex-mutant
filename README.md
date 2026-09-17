@@ -273,8 +273,11 @@ workflow (`.github/workflows/release.yml`, manually triggered) runs
 `scripts/release.mjs` and attaches its output to a GitHub prerelease.
 See [AGENTS.md](AGENTS.md) for the full contributor/agent contract,
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for module boundaries and the acceptance
-contract, [CONTRIBUTING.md](CONTRIBUTING.md) for how to propose a change, and
-[SECURITY.md](SECURITY.md) for how to report a vulnerability.
+contract, [CONTRIBUTING.md](CONTRIBUTING.md) for how to propose a change,
+[SECURITY.md](SECURITY.md) for how to report a vulnerability, and
+[docs/TECHNICAL-REVIEW.md](docs/TECHNICAL-REVIEW.md) for a committee-ready brief
+(architecture/data flow, dependencies, platform support, acceptance matrix, and a
+runnable synthetic pilot recipe) if you're evaluating this for internal use.
 
 ## License
 

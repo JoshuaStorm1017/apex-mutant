@@ -5,11 +5,22 @@
 Apex Mutant is a local CLI. It:
 
 - Reads Apex source from an SFDX project on disk.
-- Never edits your original project files — mutations are only ever applied to a
-  throwaway temporary copy that is deleted when the run ends.
-- Only ever calls `sf project deploy start --dry-run`. It never deploys, never applies
-  a quick-deploy fallback, and never holds or transmits credentials itself (it relies
-  entirely on your already-authenticated Salesforce CLI).
+- Never edits your Apex source under your package directories — mutations are only
+  ever applied to a throwaway temporary copy that is deleted when the run ends. This is
+  **not** the same claim as "writes nothing into your project": `plan`/`run` do
+  intentionally write output artifacts (`plan.json`, `report.json`, `report.html`) into
+  `--output`, which defaults to `.apex-mutant/` inside your project (see README's "How
+  it works" and "Apex-only snapshots"). Those writes are atomic — a fresh temp file
+  followed by a rename that replaces rather than follows a pre-existing symlink at the
+  destination — specifically so a planted or leftover symlink there can't redirect the
+  write into your source; see `HANDOFF.md` for the real, previously-fixed bug that
+  guarantee closes.
+- Before `run` sends any mutant source to `--target-org`, it runs a read-only
+  `sf org list auth --json` check and refuses to proceed unless that org is classified
+  as a sandbox or scratch org, with no override flag (see README's "The sandbox/scratch
+  guard"). Every actual validation is `sf project deploy start --dry-run`. It never
+  deploys for real, never applies a quick-deploy fallback, and never holds or transmits
+  credentials itself (it relies entirely on your already-authenticated Salesforce CLI).
 - Writes reports (`report.json`, `report.html`) that can contain your source snippets.
   These are written locally, with `0o600` permissions where the platform honors them,
   and are never uploaded anywhere by this tool.

@@ -3,6 +3,54 @@
 Concise, evidence-based log per checkpoint for Codex's medium-depth review. No
 Salesforce CLI or org is available or used anywhere in this log.
 
+## Checkpoint D — docs/TECHNICAL-REVIEW.md, SECURITY.md correction (milestone complete)
+
+Final slice of the "easier to pilot/review externally" milestone (A–D). No code
+changes — docs only, so `npm run check` is unchanged at 73/73; ran it anyway to confirm.
+
+**`docs/TECHNICAL-REVIEW.md`** (new): generic committee-ready brief — explicitly not
+tied to any named employer or review body. Covers architecture/data flow (with an
+ASCII diagram), the exact `sf` commands this tool runs and why each is read-only, a
+dependency/license table (cross-referencing the SBOM `scripts/release.mjs` generates
+per-release rather than duplicating stale numbers), install/uninstall, a platform
+support table, API/time budget, the remote-cancellation limitation (`Ctrl+C` stops the
+local process but not an already-in-flight remote validation — quotes the exact message
+`src/salesforce.ts` already returns for this), and an acceptance matrix that explicitly
+separates what's verified offline from what's pending a real sandbox pilot.
+
+**Synthetic pilot recipe**: uses the `examples/basic` fixture already in this repo,
+including its deliberately-weak `checksEligibility` boundary test. Before writing the
+expected results, verified the mutation-effect reasoning empirically rather than by
+hand-tracing alone: wrote a throwaway pure-JS simulation of `DiscountService`'s logic
+(original vs. each of the 5 known mutants) and ran the existing test assertions against
+each variant. Result: **3 of 5 mutants killed, 2 survive** (60% score) — not the single
+survivor a quick read of the test's own comment would suggest. The `<`→`<=` boundary in
+`price`'s negative-amount check also survives, because no existing test calls
+`price(0, ...)` — this was not previously documented anywhere in this repo. The
+document states this is a logic-equivalent simulation, not a real Apex/org run, and
+flags the acceptance matrix accordingly (⏳ pending a real pilot to confirm it holds
+against actual `sf` CLI/org behavior). Simulation script deleted after use, not committed.
+
+**`SECURITY.md` correction**: "Never edits your original project files" was too
+absolute given `plan`/`run` intentionally write output artifacts inside the project by
+default. Reworded to distinguish "your Apex source is never edited" from "nothing is
+ever written into your project" (false), and to cross-reference the atomic-write /
+symlink-resistance guarantee and the sandbox/scratch gate, matching what
+`docs/TECHNICAL-REVIEW.md` and `HANDOFF.md` now also say.
+
+```
+npm run check   # unchanged: 73/73 pass, typecheck/build clean (docs-only checkpoint)
+npm run demo    # unchanged: 5 mutants against examples/basic
+```
+
+**Judgment calls:**
+- Did not fabricate or imply any live-org verification anywhere in the new document —
+  every "verified" cell in its acceptance matrix names the actual offline/simulated
+  mechanism, and every org-dependent claim is explicitly marked pending.
+- Cross-referenced the SBOM/license table to "generated fresh per release" rather than
+  hardcoding the current two-dependency list into the review doc, so it doesn't go
+  stale if dependencies change without this doc being updated in lockstep.
+
 ## Checkpoint C — CI-automated tarball smoke test, release script, GitHub prerelease
 
 **`scripts/tarball-smoke.mjs`**: packs a real tarball (not `--dry-run`), installs it
