@@ -57,6 +57,7 @@ Apex source itself, and always with a stated reason:
 Suppressed mutants are never validated, never scored, and always listed in the
 report with their reason. A marker with no reason, an unknown operator, or one that
 matches nothing is reported as a problem and honors nothing.
+
 Source is never edited; run sends Apex-only snapshots via --dry-run.
 Existing non-Apex dependencies must already be installed in the target org.
 run only proceeds against an org the Salesforce CLI itself classifies as a
